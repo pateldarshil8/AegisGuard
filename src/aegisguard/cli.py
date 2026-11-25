@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 from . import __version__
 from .core import config
-from .modules import firewall, fixer, health, reports, scanner
+from .modules import firewall, fixer, health, netmon, reports, scanner
 
 
 def _fix_flow(auto_yes: bool) -> int:
@@ -24,6 +25,23 @@ def _fix_flow(auto_yes: bool) -> int:
     return 0
 
 
+def _watch(interval: int) -> int:
+    """Re-check connections every `interval` seconds; print only new findings. Ctrl+C to stop."""
+    seen: set[tuple] = set()
+    print(f"Watching network every {interval}s (Ctrl+C to stop)...")
+    try:
+        while True:
+            for f in netmon.run().findings:
+                key = (f.title, f.detail)
+                if key not in seen:
+                    seen.add(key)
+                    print(f"[{f.severity.value.upper():8}] {f.title} - {f.detail}")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="aegisguard", description="AegisGuard AI endpoint security suite")
     p.add_argument("--version", action="version", version=__version__)
@@ -34,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("audit", help="check for risky system settings (read-only)")
     fx = sub.add_parser("fix", help="propose fixes and apply the ones you approve")
     fx.add_argument("--yes", action="store_true", help="approve all (use with care)")
+    nm = sub.add_parser("net", help="inspect network connections and listeners (read-only)")
+    nm.add_argument("--watch", type=int, metavar="SECONDS", help="keep watching, printing new findings")
     sub.add_parser("full", help="run all checks and write a report")
     sub.add_parser("ui", help="launch desktop UI")
     args = p.parse_args(argv)
@@ -45,9 +65,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "fix":
         return _fix_flow(args.yes)
+    if args.cmd == "net" and args.watch:
+        return _watch(args.watch)
 
     runners = {"health": [health.run], "scan": [scanner.run], "firewall": [firewall.run],
-               "audit": [fixer.run], "full": [health.run, scanner.run, firewall.run, fixer.run]}[args.cmd]
+               "audit": [fixer.run], "net": [netmon.run],
+               "full": [health.run, scanner.run, firewall.run, fixer.run, netmon.run]}[args.cmd]
     merged = reports.merge([r() for r in runners])
     md, _ = reports.write(merged)
     for f in merged.findings:
