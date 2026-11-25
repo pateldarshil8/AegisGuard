@@ -6,11 +6,13 @@ import time
 
 from . import __version__
 from .core import config
-from .modules import firewall, fixer, health, netmon, quarantine, reports, scanner
+from pathlib import Path
+
+from .modules import firewall, fixer, fwrules, health, netmon, processes, quarantine, remediation, reports, scanner
 
 
 def _fix_flow(auto_yes: bool) -> int:
-    res, fixes = fixer.propose()
+    res, fixes = remediation.propose_all()
     for f in res.findings:
         print(f"[{f.severity.value.upper():8}] {f.title} {('- ' + f.detail) if f.detail else ''}")
     if not fixes:
@@ -18,7 +20,8 @@ def _fix_flow(auto_yes: bool) -> int:
         return 0
     print(f"\n{len(fixes)} fix(es) available. Nothing runs without your approval (admin rights may be needed).\n")
     for fx in fixes:
-        print(f"* {fx.finding.title}\n  Fix: {fx.description}\n  Command: {' '.join(fx.command)}")
+        cmds = "\n           ".join(' '.join(c) for c in [fx.command, *fx.extra_commands])
+        print(f"* {fx.finding.title}\n  Fix: {fx.description}\n  Command: {cmds}")
         ans = "y" if auto_yes else input("  Apply? [y/N] ").strip().lower()
         ok, msg = fixer.apply(fx, approved=ans == "y")
         print(f"  -> {'OK' if ok else 'not applied'}: {msg}\n")
@@ -50,6 +53,29 @@ def _quarantine_cmd(action: str, target: str | None) -> int:
     return 0
 
 
+def _block_cmd(action: str, target: str | None) -> int:
+    try:
+        if action == "rules":
+            names = fwrules.list_rules()
+            print("\n".join(names) if names else "No AegisGuard block rules.")
+            return 0
+        if not target:
+            print(f"'{action}' needs a target.")
+            return 2
+        cmds = fwrules.block_commands(target) if action == "block" else [fwrules.remove_command(target)]
+    except fwrules.RuleError as e:
+        print(f"Error: {e}")
+        return 1
+    print("This will run:\n  " + "\n  ".join(" ".join(c) for c in cmds))
+    if input("Apply? [y/N] ").strip().lower() != "y":
+        print("Cancelled.")
+        return 0
+    fx = fixer.Fix(fixer.Finding("firewall", action, fixer.Severity.INFO), action, cmds[0], True, cmds[1:])
+    ok, msg = fixer.apply(fx, approved=True)
+    print(("Done: " if ok else "Failed: ") + msg + ("" if ok else "\n(Run from an administrator terminal.)"))
+    return 0 if ok else 1
+
+
 def _watch(interval: int) -> int:
     """Re-check connections every `interval` seconds; print only new findings. Ctrl+C to stop."""
     seen: set[tuple] = set()
@@ -72,7 +98,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health", help="CPU/memory/disk snapshot")
-    sub.add_parser("scan", help="quick file scan")
+    sc = sub.add_parser("scan", help="file scan (Downloads + Temp by default)")
+    sc.add_argument("--path", action="append", help="scan this folder instead (repeatable)")
+    sub.add_parser("procs", help="check running processes for signs of malware (read-only)")
+    bp = sub.add_parser("block", help="block a program (full .exe path) or internet IP in Windows Firewall")
+    bp.add_argument("target")
+    up = sub.add_parser("unblock", help="remove an AegisGuard block rule by name")
+    up.add_argument("target")
+    sub.add_parser("rules", help="list AegisGuard firewall block rules")
     sub.add_parser("firewall", help="audit Windows Firewall state")
     sub.add_parser("audit", help="check for risky system settings (read-only)")
     fx = sub.add_parser("fix", help="propose fixes and apply the ones you approve")
@@ -97,14 +130,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "quarantine":
         return _quarantine_cmd(args.action, args.target)
+    if args.cmd in ("block", "unblock", "rules"):
+        return _block_cmd(args.cmd, getattr(args, "target", None))
     if args.cmd == "fix":
         return _fix_flow(args.yes)
     if args.cmd == "net" and args.watch:
         return _watch(args.watch)
 
-    runners = {"health": [health.run], "scan": [scanner.run], "firewall": [firewall.run],
+    scan_run = (lambda: scanner.run([Path(p) for p in args.path])) if getattr(args, "path", None) else scanner.run
+    runners = {"health": [health.run], "scan": [scan_run], "procs": [processes.run], "firewall": [firewall.run],
                "audit": [fixer.run], "net": [netmon.run],
-               "full": [health.run, scanner.run, firewall.run, fixer.run, netmon.run]}[args.cmd]
+               "full": [health.run, scanner.run, processes.run, firewall.run, fixer.run, netmon.run]}[args.cmd]
     merged = reports.merge([r() for r in runners])
     md, _ = reports.write(merged)
     for f in merged.findings:

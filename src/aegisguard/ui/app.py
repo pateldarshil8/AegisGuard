@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHe
 from .. import __version__
 from ..core import config
 from ..core.models import Finding, ScanResult
-from ..modules import firewall, fixer, health, netmon, quarantine, reports, scanner
+from ..modules import firewall, fixer, health, netmon, processes, quarantine, remediation, reports, scanner
 
 SEV_COLORS = {"critical": "#ff5370", "high": "#ff8a65", "medium": "#ffcb6b", "low": "#82aaff", "info": "#9aa5b1"}
 SEV_WEIGHT = {"critical": 30, "high": 15, "medium": 7, "low": 2, "info": 0}
@@ -106,7 +106,7 @@ def heading(text: str, sub: str = "") -> QWidget:
 
 
 def full_check() -> ScanResult:
-    merged = reports.merge([health.run(), scanner.run(), firewall.run(), fixer.run(), netmon.run()])
+    merged = reports.merge([health.run(), scanner.run(), processes.run(), firewall.run(), fixer.run(), netmon.run()])
     reports.write(merged)
     return merged
 
@@ -262,7 +262,7 @@ class FixesPage(QWidget):
     def start(self):
         self.btn.setEnabled(False)
         self.status.setText("Checking...")
-        self.worker = Worker(fixer.propose)
+        self.worker = Worker(remediation.propose_all)
         self.worker.done.connect(self.finish)
         self.worker.failed.connect(lambda m: (self.status.setText(m), self.btn.setEnabled(True)))
         self.worker.start()
@@ -290,7 +290,8 @@ class FixesPage(QWidget):
 
     def apply(self, fx: fixer.Fix):
         admin_note = "" if is_admin() or not fx.needs_admin else "\n\nNote: this needs administrator rights; run AegisGuard as administrator."
-        msg = f"{fx.finding.title}\n\nThis will run:\n{' '.join(fx.command)}{admin_note}\n\nApply this fix?"
+        cmds = "\n".join(' '.join(c) for c in [fx.command, *fx.extra_commands])
+        msg = f"{fx.finding.title}\n\nThis will run:\n{cmds}{admin_note}\n\nApply this fix?"
         if QMessageBox.question(self, "Apply fix?", msg) != QMessageBox.Yes:
             return
         ok, out = fixer.apply(fx, approved=True)
@@ -404,6 +405,8 @@ class MainWindow(QMainWindow):
             ("Dashboard", DashboardPage()),
             ("Malware Scan", ModulePage("Malware Scan", "Scans your Downloads and Temp folders for known threats and disguised executables.",
                                         scanner.run, "Run quick scan", allow_quarantine=True)),
+            ("Processes", ModulePage("Processes", "Running programs checked for masquerading, look-alike names and suspicious PowerShell (read-only).",
+                                     processes.run, "Check processes")),
             ("Network", ModulePage("Network", "Open ports and suspicious connections (read-only).", netmon.run, "Check network")),
             ("Firewall", ModulePage("Firewall", "Windows Firewall profile status.", firewall.run, "Audit firewall")),
             ("Fixes", FixesPage()),

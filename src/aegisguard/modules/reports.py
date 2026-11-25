@@ -12,8 +12,13 @@ ORDER = ["critical", "high", "medium", "low", "info"]
 
 def merge(results: list[ScanResult]) -> ScanResult:
     out = ScanResult()
+    seen: set[tuple] = set()
     for r in results:
-        out.findings.extend(r.findings)
+        for f in r.findings:  # the same issue can be reported by two modules; keep one
+            key = (f.title, f.detail, f.path)
+            if key not in seen:
+                seen.add(key)
+                out.findings.append(f)
         out.meta.update(r.meta)
     return out
 

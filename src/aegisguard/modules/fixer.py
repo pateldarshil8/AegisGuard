@@ -8,11 +8,11 @@ Design rules:
 from __future__ import annotations
 
 import subprocess
-import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from ..core.models import Finding, ScanResult, Severity
+from . import firewall
 
 try:  # Windows only
     import winreg
@@ -28,6 +28,7 @@ class Fix:
     description: str
     command: list[str]
     needs_admin: bool = True
+    extra_commands: list[list[str]] = field(default_factory=list)
 
 
 RegReader = Callable[[str, str], object | None]  # (key path under HKLM, value name) -> value
@@ -76,7 +77,8 @@ def _defender_realtime_on() -> bool | None:
 
 
 def propose(reg: RegReader = _hklm_reader, run_entries: dict[str, str] | None = None,
-            defender_on: bool | None = ...) -> tuple[ScanResult, list[Fix]]:  # type: ignore[assignment]
+            defender_on: bool | None = ..., fw_states: dict[str, str] | None = ...,  # type: ignore[assignment]
+            ) -> tuple[ScanResult, list[Fix]]:
     res, fixes = ScanResult(), []
 
     def add(title, sev, detail, remediation, cmd=None, admin=True):
@@ -112,6 +114,14 @@ def propose(reg: RegReader = _hklm_reader, run_entries: dict[str, str] | None = 
             "Turn real-time protection back on.",
             ["powershell", "-NoProfile", "-Command", "Set-MpPreference -DisableRealtimeMonitoring $false"])
 
+    # Firewall profiles switched off
+    states = (firewall.profile_states() or {}) if fw_states is ... else (fw_states or {})
+    for pname, state in states.items():
+        if state.upper() != "ON":
+            add(f"{pname} firewall profile is OFF", Severity.HIGH, f"State: {state}",
+                f"Turn the {pname} firewall profile back on.",
+                ["netsh", "advfirewall", "set", f"{pname.lower()}profile", "state", "on"])
+
     # Startup entries launching from user-writable/temp locations (report only: removal is a judgment call)
     for name, cmdline in (run_entries if run_entries is not None else _run_keys()).items():
         low = cmdline.lower()
@@ -122,15 +132,21 @@ def propose(reg: RegReader = _hklm_reader, run_entries: dict[str, str] | None = 
 
 
 def apply(fix: Fix, approved: bool) -> tuple[bool, str]:
-    """Run a fix only if the user approved it."""
+    """Run a fix (all of its commands) only if the user approved it. Stops at the first failure."""
     if not approved:
         return False, "skipped (not approved)"
-    try:
-        r = subprocess.run(fix.command, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError) as e:
-        return False, str(e)
-    ok = r.returncode == 0
-    return ok, (r.stdout or r.stderr).strip() or ("ok" if ok else f"exit {r.returncode}")
+    outputs: list[str] = []
+    for cmd in [fix.command, *fix.extra_commands]:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return False, str(e)
+        out = (r.stdout or r.stderr).strip()
+        if r.returncode != 0:
+            return False, out or f"exit {r.returncode}"
+        if out:
+            outputs.append(out)
+    return True, "; ".join(outputs) or "ok"
 
 
 def run() -> ScanResult:
