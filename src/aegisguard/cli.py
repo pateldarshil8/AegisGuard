@@ -6,7 +6,7 @@ import time
 
 from . import __version__
 from .core import config
-from .modules import firewall, fixer, health, netmon, reports, scanner
+from .modules import firewall, fixer, health, netmon, quarantine, reports, scanner
 
 
 def _fix_flow(auto_yes: bool) -> int:
@@ -22,6 +22,31 @@ def _fix_flow(auto_yes: bool) -> int:
         ans = "y" if auto_yes else input("  Apply? [y/N] ").strip().lower()
         ok, msg = fixer.apply(fx, approved=ans == "y")
         print(f"  -> {'OK' if ok else 'not applied'}: {msg}\n")
+    return 0
+
+
+def _quarantine_cmd(action: str, target: str | None) -> int:
+    try:
+        if action == "list":
+            items = quarantine.list_items()
+            for i in items:
+                print(f"{i.id}  {i.quarantined_at}  {i.original_path}  ({i.reason})")
+            print(f"{len(items)} item(s) in quarantine.")
+        elif not target:
+            print(f"'{action}' needs a path (add) or an item id (restore/delete).")
+            return 2
+        elif action == "add":
+            i = quarantine.quarantine_file(target, "manual")
+            print(f"Quarantined {i.original_path} as {i.id}")
+        elif action == "restore":
+            print(f"Restored to {quarantine.restore(target)}")
+        elif action == "delete":
+            if input(f"Permanently delete {target}? [y/N] ").strip().lower() == "y":
+                quarantine.delete(target)
+                print("Deleted.")
+    except quarantine.QuarantineError as e:
+        print(f"Error: {e}")
+        return 1
     return 0
 
 
@@ -54,15 +79,24 @@ def main(argv: list[str] | None = None) -> int:
     fx.add_argument("--yes", action="store_true", help="approve all (use with care)")
     nm = sub.add_parser("net", help="inspect network connections and listeners (read-only)")
     nm.add_argument("--watch", type=int, metavar="SECONDS", help="keep watching, printing new findings")
+    qp = sub.add_parser("quarantine", help="list/add/restore/delete quarantined files")
+    qp.add_argument("action", choices=["list", "add", "restore", "delete"])
+    qp.add_argument("target", nargs="?", help="file path (add) or item id (restore/delete)")
     sub.add_parser("full", help="run all checks and write a report")
     sub.add_parser("ui", help="launch desktop UI")
     args = p.parse_args(argv)
 
     config.ensure_dirs()
     if args.cmd == "ui":
-        from .ui.app import launch
+        try:
+            from .ui.app import launch
+        except ImportError:
+            print("The UI needs PySide6. Install it with:  pip install -e .[ui]")
+            return 1
         launch()
         return 0
+    if args.cmd == "quarantine":
+        return _quarantine_cmd(args.action, args.target)
     if args.cmd == "fix":
         return _fix_flow(args.yes)
     if args.cmd == "net" and args.watch:

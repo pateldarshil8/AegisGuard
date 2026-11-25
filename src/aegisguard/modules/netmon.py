@@ -19,6 +19,9 @@ RISKY_LISTEN_PORTS = {
 }
 SUSPICIOUS_PATH_MARKERS = ("\\temp\\", "\\downloads\\", "\\appdata\\local\\temp", "\\users\\public\\")
 # Ports commonly abused by backdoors/C2 when used by user-writable-location programs.
+# Windows listens on these by default, owned by these processes; the firewall normally blocks them
+# on public networks, so they are reported as low-severity notes instead of warnings.
+DEFAULT_WINDOWS_LISTENERS = {(135, "svchost.exe"), (139, "system"), (445, "system")}
 UNUSUAL_OUTBOUND = {4444, 1337, 31337, 6667, 8888, 9001}
 
 
@@ -76,8 +79,14 @@ def analyze(conns: list[Conn]) -> ScanResult:
         exposed = c.laddr_ip in ("0.0.0.0", "::", "")
         if c.status == "LISTEN" and exposed and c.laddr_port in RISKY_LISTEN_PORTS:
             svc = RISKY_LISTEN_PORTS[c.laddr_port]
-            add(("listen", c.laddr_port), f"{svc} port {c.laddr_port} open to all interfaces", Severity.MEDIUM,
-                who, "Disable the service or block the port in Windows Firewall if you don't need it.", c.exe or None)
+            if (c.laddr_port, c.proc.lower()) in DEFAULT_WINDOWS_LISTENERS:
+                add(("listen", c.laddr_port), f"{svc} port {c.laddr_port} listening (default Windows service)",
+                    Severity.LOW, who,
+                    "Normal on Windows. Make sure the firewall is on and your network profile is Public on untrusted networks.",
+                    c.exe or None)
+            else:
+                add(("listen", c.laddr_port), f"{svc} port {c.laddr_port} open to all interfaces", Severity.MEDIUM,
+                    who, "Disable the service or block the port in Windows Firewall if you don't need it.", c.exe or None)
         low = c.exe.lower()
         from_risky_path = any(m in low for m in SUSPICIOUS_PATH_MARKERS)
         if c.status == "ESTABLISHED" and _is_public(c.raddr_ip):

@@ -40,3 +40,14 @@ def test_private_destination_not_flagged():
 
 def test_unusual_port_flagged():
     assert any("4444" in t for t in titles(analyze([conn(raddr_port=4444)])))
+
+
+def test_default_windows_listener_is_low():
+    c = conn(proc="System", status="LISTEN", laddr_ip="0.0.0.0", laddr_port=445, raddr_ip=None, raddr_port=None)
+    res = analyze([c])
+    assert res.findings[0].severity.value == "low"
+
+
+def test_unexpected_process_on_smb_port_stays_medium():
+    c = conn(proc="weird.exe", status="LISTEN", laddr_ip="0.0.0.0", laddr_port=445, raddr_ip=None, raddr_port=None)
+    assert analyze([c]).findings[0].severity.value == "medium"
