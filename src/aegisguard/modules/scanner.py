@@ -9,7 +9,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from ..core import config
+from ..core import config, settings
 from ..core.models import Finding, ScanResult, Severity
 
 # Known-bad SHA-256 hashes. The EICAR hash lets you verify detection safely.
@@ -120,14 +120,14 @@ def scan_path(path: Path, res: ScanResult) -> None:
 def run(dirs: list[Path] | None = None) -> ScanResult:
     res = ScanResult()
     KNOWN_BAD.update(load_known_bad())
-    qdir = str(config.QUARANTINE_DIR).lower()
+    skip = (str(config.QUARANTINE_DIR).lower(), *(e.lower() for e in settings.load().exclusions))
     count = 0
     for d in dirs or config.QUICK_SCAN_DIRS:
         if not d.exists():
             continue
         try:
             for p in d.rglob("*"):
-                if str(p).lower().startswith(qdir) or not p.is_file():
+                if str(p).lower().startswith(skip) or not p.is_file():
                     continue
                 count += 1
                 scan_path(p, res)

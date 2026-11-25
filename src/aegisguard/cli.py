@@ -5,10 +5,11 @@ import sys
 import time
 
 from . import __version__
-from .core import config
+from .core import config, settings
 from pathlib import Path
 
-from .modules import firewall, fixer, fwrules, health, netmon, processes, quarantine, remediation, reports, scanner
+from .modules import (cleanup, firewall, fixer, fwrules, health, monitor, netmon, processes, quarantine,
+                      remediation, reports, scanner)
 
 
 def _fix_flow(auto_yes: bool) -> int:
@@ -76,6 +77,54 @@ def _block_cmd(action: str, target: str | None) -> int:
     return 0 if ok else 1
 
 
+def _cleanup_cmd(min_age: float) -> int:
+    print(f"Looking for temp files older than {min_age:g} day(s)...")
+    cands = cleanup.scan_cleanup(min_age_days=min_age)
+    if not cands:
+        print("Nothing to clean.")
+        return 0
+    summary = cleanup.summarize(cands)
+    for cat, (n, b) in summary.items():
+        print(f"  {cat}: {n} file(s), {cleanup.human(b)}")
+    total = sum(b for _, b in summary.values())
+    print(f"Total: {cleanup.human(total)} in {len(cands)} file(s). Only these temp/cache folders are touched.")
+    if input("Delete these files permanently? [y/N] ").strip().lower() != "y":
+        print("Cancelled.")
+        return 0
+    freed, deleted, failed = cleanup.clean(cands, approved=True)
+    print(f"Freed {cleanup.human(freed)} ({deleted} deleted, {failed} skipped because they are in use or protected).")
+    return 0
+
+
+def _space_cmd(path: str | None, top: int) -> int:
+    root = Path(path) if path else Path.home()
+    print(f"Measuring {root} (up to 30 seconds)...")
+    items, complete = cleanup.largest_items(root, top)
+    for p, size in items:
+        print(f"{cleanup.human(size):>10}  {p}")
+    if not complete:
+        print("(Stopped at the time limit; sizes may be underestimated.)")
+    return 0
+
+
+def _monitor_cmd() -> int:
+    s = settings.load()
+    print("AegisGuard monitor running. Press Ctrl+C to stop.")
+    print(f"  Watching: {', '.join(s.watch_dirs)}")
+    print(f"  Alerting on {s.min_alert_severity}+ severity. Log: {config.DATA_DIR / 'alerts.log'}")
+
+    def show(f):
+        print(f"[{f.severity.value.upper():8}] {f.module}: {f.title} {('- ' + f.detail) if f.detail else ''}")
+
+    m = monitor.Monitor(s, on_alert=show)
+    try:
+        m.run_forever()
+    except KeyboardInterrupt:
+        m.stop()
+        print("\nStopped.")
+    return 0
+
+
 def _watch(interval: int) -> int:
     """Re-check connections every `interval` seconds; print only new findings. Ctrl+C to stop."""
     seen: set[tuple] = set()
@@ -115,6 +164,12 @@ def main(argv: list[str] | None = None) -> int:
     qp = sub.add_parser("quarantine", help="list/add/restore/delete quarantined files")
     qp.add_argument("action", choices=["list", "add", "restore", "delete"])
     qp.add_argument("target", nargs="?", help="file path (add) or item id (restore/delete)")
+    cl = sub.add_parser("cleanup", help="find and remove old temp/cache files (asks first)")
+    cl.add_argument("--min-age", type=float, default=2, help="only files older than this many days (default 2)")
+    sp = sub.add_parser("space", help="show which folders use the most disk space (read-only)")
+    sp.add_argument("--path", help="folder to measure (default: your user folder)")
+    sp.add_argument("--top", type=int, default=15)
+    sub.add_parser("monitor", help="run background protection in this window (Ctrl+C to stop)")
     sub.add_parser("full", help="run all checks and write a report")
     sub.add_parser("ui", help="launch desktop UI")
     args = p.parse_args(argv)
@@ -128,6 +183,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         launch()
         return 0
+    if args.cmd == "cleanup":
+        return _cleanup_cmd(args.min_age)
+    if args.cmd == "space":
+        return _space_cmd(args.path, args.top)
+    if args.cmd == "monitor":
+        return _monitor_cmd()
     if args.cmd == "quarantine":
         return _quarantine_cmd(args.action, args.target)
     if args.cmd in ("block", "unblock", "rules"):

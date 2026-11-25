@@ -6,18 +6,23 @@ Long-running checks run on worker threads so the window never freezes.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QThread, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont
+from PySide6.QtCore import QObject, QPointF, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                               QMainWindow, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
+                               QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
+                               QSystemTrayIcon,
                                QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .. import __version__
-from ..core import config
+from datetime import datetime
+
+from ..core import config, settings
 from ..core.models import Finding, ScanResult
-from ..modules import firewall, fixer, health, netmon, processes, quarantine, remediation, reports, scanner
+from ..modules import (cleanup, firewall, fixer, health, monitor, netmon, processes, quarantine, remediation,
+                       reports, scanner)
 
 SEV_COLORS = {"critical": "#ff5370", "high": "#ff8a65", "medium": "#ffcb6b", "low": "#82aaff", "info": "#9aa5b1"}
 SEV_WEIGHT = {"critical": 30, "high": 15, "medium": 7, "low": 2, "info": 0}
@@ -109,6 +114,124 @@ def full_check() -> ScanResult:
     merged = reports.merge([health.run(), scanner.run(), processes.run(), firewall.run(), fixer.run(), netmon.run()])
     reports.write(merged)
     return merged
+
+
+def make_icon() -> QIcon:
+    pm = QPixmap(64, 64)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor("#2f6fed"))
+    p.setPen(Qt.NoPen)
+    p.drawPolygon(QPolygonF([QPointF(32, 4), QPointF(58, 14), QPointF(54, 40), QPointF(32, 60),
+                             QPointF(10, 40), QPointF(6, 14)]))
+    p.setBrush(QColor("#ffffff"))
+    p.drawPolygon(QPolygonF([QPointF(32, 16), QPointF(46, 22), QPointF(44, 38), QPointF(32, 48),
+                             QPointF(20, 38), QPointF(18, 22)]))
+    p.end()
+    return QIcon(pm)
+
+
+class AlertBridge(QObject):
+    """Lets the monitor thread hand alerts to the UI thread safely."""
+    alert = Signal(object)
+
+
+class AlertsPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.addWidget(heading("Alerts", "Live alerts from background protection (newest first). Also saved to data\\alerts.log."))
+        self.table = make_table(["Time", "Severity", "Finding", "Detail"])
+        lay.addWidget(self.table, 1)
+
+    def add(self, f: Finding):
+        self.table.insertRow(0)
+        sev = QTableWidgetItem(f.severity.value.upper())
+        sev.setForeground(QColor(SEV_COLORS[f.severity.value]))
+        for c, item in enumerate([QTableWidgetItem(datetime.now().strftime("%H:%M:%S")), sev,
+                                  QTableWidgetItem(f.title), QTableWidgetItem(f.detail or f.path or "")]):
+            self.table.setItem(0, c, item)
+        self.table.setColumnWidth(0, 80)
+        self.table.setColumnWidth(1, 80)
+        self.table.setColumnWidth(2, 380)
+
+
+class CleanupPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.cands: list[cleanup.Candidate] = []
+        lay = QVBoxLayout(self)
+        lay.addWidget(heading("Disk Cleanup", "Frees space from old temp files, crash dumps and web cache only. "
+                                              "Your documents and downloads are never touched."))
+        row = QHBoxLayout()
+        self.find_btn = QPushButton("Find reclaimable space")
+        self.find_btn.clicked.connect(self.find)
+        self.clean_btn = QPushButton("Delete these files")
+        self.clean_btn.setObjectName("danger")
+        self.clean_btn.setEnabled(False)
+        self.clean_btn.clicked.connect(self.clean)
+        self.space_btn = QPushButton("Where is my space going?")
+        self.space_btn.clicked.connect(self.space)
+        for b in (self.find_btn, self.clean_btn, self.space_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+        self.table = make_table(["Category / folder", "Files", "Size"])
+        lay.addWidget(self.table, 1)
+
+    def _show(self, rows):
+        self.table.setRowCount(len(rows))
+        for r, vals in enumerate(rows):
+            for c, v in enumerate(vals):
+                self.table.setItem(r, c, QTableWidgetItem(v))
+        self.table.setColumnWidth(0, 520)
+
+    def find(self):
+        self.find_btn.setEnabled(False)
+        self.status.setText("Looking for old temp files...")
+        self.worker = Worker(cleanup.scan_cleanup)
+        self.worker.done.connect(self._found)
+        self.worker.failed.connect(lambda m: (self.status.setText(m), self.find_btn.setEnabled(True)))
+        self.worker.start()
+
+    def _found(self, cands):
+        self.cands = cands
+        summary = cleanup.summarize(cands)
+        self._show([(cat, str(n), cleanup.human(b)) for cat, (n, b) in summary.items()])
+        total = sum(b for _, b in summary.values())
+        self.status.setText(f"{cleanup.human(total)} can be freed from {len(cands)} file(s)." if cands
+                            else "Nothing to clean.")
+        self.clean_btn.setEnabled(bool(cands))
+        self.find_btn.setEnabled(True)
+
+    def clean(self):
+        total = sum(c.size for c in self.cands)
+        if QMessageBox.question(self, "Delete files?",
+                                f"Permanently delete {len(self.cands)} temp/cache file(s) ({cleanup.human(total)})?\n"
+                                "Files that are in use will be skipped. This cannot be undone.") != QMessageBox.Yes:
+            return
+        freed, deleted, failed = cleanup.clean(self.cands, approved=True)
+        self.status.setText(f"Freed {cleanup.human(freed)} ({deleted} deleted, {failed} skipped).")
+        self.cands = []
+        self.clean_btn.setEnabled(False)
+        self._show([])
+
+    def space(self):
+        self.space_btn.setEnabled(False)
+        self.status.setText("Measuring your user folder (up to 30 seconds)...")
+        self.worker = Worker(lambda: cleanup.largest_items(Path.home()))
+        self.worker.done.connect(self._space_done)
+        self.worker.failed.connect(lambda m: (self.status.setText(m), self.space_btn.setEnabled(True)))
+        self.worker.start()
+
+    def _space_done(self, result):
+        items, complete = result
+        self._show([(p, "", cleanup.human(s)) for p, s in items])
+        self.status.setText("Biggest items in your user folder." + ("" if complete else " (Stopped at time limit; sizes may be low.)"))
+        self.space_btn.setEnabled(True)
 
 
 class DashboardPage(QWidget):
@@ -401,6 +524,7 @@ class MainWindow(QMainWindow):
         self.nav = QListWidget()
         self.nav.setFixedWidth(190)
         self.stack = QStackedWidget()
+        self.alerts_page = AlertsPage()
         pages = [
             ("Dashboard", DashboardPage()),
             ("Malware Scan", ModulePage("Malware Scan", "Scans your Downloads and Temp folders for known threats and disguised executables.",
@@ -411,6 +535,8 @@ class MainWindow(QMainWindow):
             ("Firewall", ModulePage("Firewall", "Windows Firewall profile status.", firewall.run, "Audit firewall")),
             ("Fixes", FixesPage()),
             ("Quarantine", QuarantinePage()),
+            ("Disk Cleanup", CleanupPage()),
+            ("Alerts", self.alerts_page),
             ("Reports", ReportsPage()),
         ]
         for name, page in pages:
@@ -423,6 +549,63 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(18, 14, 18, 14)
         body.addWidget(self.stack)
         lay.addLayout(body, 1)
+        self._setup_protection()
+
+    # ---- background protection + tray -------------------------------------------------
+    def _setup_protection(self):
+        self._quitting = False
+        self.bridge = AlertBridge()
+        self.bridge.alert.connect(self._on_alert)
+        self.monitor = monitor.Monitor(settings.load(), on_alert=self.bridge.alert.emit)
+        self.tray = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = QSystemTrayIcon(make_icon(), self)
+            self.setWindowIcon(make_icon())
+            self.tray_menu = QMenu()
+            self.tray_menu.addAction("Open AegisGuard").triggered.connect(self._show_window)
+            self.toggle_action = self.tray_menu.addAction("Pause protection")
+            self.toggle_action.triggered.connect(self._toggle_protection)
+            self.tray_menu.addSeparator()
+            self.tray_menu.addAction("Quit AegisGuard").triggered.connect(self._quit)
+            self.tray.setContextMenu(self.tray_menu)
+            self.tray.activated.connect(lambda r: self._show_window() if r == QSystemTrayIcon.Trigger else None)
+            self.tray.show()
+        self.monitor.start()
+
+    def _on_alert(self, f: Finding):
+        self.alerts_page.add(f)
+        if self.tray:
+            self.tray.showMessage(f"AegisGuard - {f.severity.value.upper()}",
+                                  f"{f.title}\n{f.detail or f.path or ''}"[:250], QSystemTrayIcon.Warning, 8000)
+
+    def _show_window(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _toggle_protection(self):
+        if self.monitor.running:
+            self.monitor.stop()
+            self.toggle_action.setText("Resume protection")
+        else:
+            self.monitor.start()
+            self.toggle_action.setText("Pause protection")
+
+    def _quit(self):
+        self._quitting = True
+        self.monitor.stop()
+        QApplication.quit()
+
+    def closeEvent(self, e):
+        if self._quitting or not (self.tray and self.tray.isVisible() and self.monitor.running):
+            self.monitor.stop()
+            e.accept()
+            QApplication.quit()
+            return
+        e.ignore()
+        self.hide()
+        self.tray.showMessage("AegisGuard is still protecting your PC",
+                              "Right-click the tray icon to open or quit.", QSystemTrayIcon.Information, 4000)
 
     def _switch(self, row: int):
         self.stack.setCurrentIndex(row)
@@ -435,6 +618,7 @@ def launch() -> None:
     config.ensure_dirs()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(STYLE)
+    app.setQuitOnLastWindowClosed(False)
     win = MainWindow()
     win.show()
     app.exec()
