@@ -1,8 +1,8 @@
-# AegisGuard v0.1.0 - first release
+# AegisGuard v1.0.0 - first release
 
 Windows endpoint security and system health suite. Desktop app + command-line tool.
 
-**Download:** `AegisGuardSetup-0.1.0.exe` (attached below). Windows 10/11, 64-bit.
+**Download:** `AegisGuardSetup-1.0.0.exe` (attached below). Windows 10/11, 64-bit.
 
 ## Highlights
 - Malware scan with heuristics (disguised executables, suspicious scripts) and known-bad hashes; quarantine with restore
@@ -23,4 +23,4 @@ Run the installer, tick "Start AegisGuard protection when I sign in" if you want
 Uninstall from Settings -> Apps; the uninstaller asks whether to delete your data.
 
 ## Verify your download
-SHA-256 of the installer: *(paste output of `Get-FileHash .\AegisGuardSetup-0.1.0.exe`)*
+SHA-256 of the installer: *(paste output of `Get-FileHash .\AegisGuardSetup-1.0.0.exe`)*

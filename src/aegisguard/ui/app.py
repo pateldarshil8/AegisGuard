@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QListWidget,
                                QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
                                QSystemTrayIcon,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from .. import __version__
 from datetime import datetime
@@ -23,7 +23,7 @@ from ..core import config, settings
 from ..core.models import Finding, ScanResult
 from ..core.scoring import security_score
 from ..modules import (cleanup, firewall, fixer, health, history, monitor, netmon, processes, quarantine, remediation,
-                       reports, scanner)
+                       reports, scanner, updater)
 
 SEV_COLORS = {"critical": "#ff5370", "high": "#ff8a65", "medium": "#ffcb6b", "low": "#82aaff", "info": "#9aa5b1"}
 
@@ -200,8 +200,132 @@ class HistoryPage(QWidget):
             bits = [f"Since the previous check: {len(new)} new, {len(resolved)} resolved."]
             bits += [f"+ {d['title']}" for d in new[:3]] + [f"- {d['title']}" for d in resolved[:3]]
             self.status.setText("\n".join(bits))
+        elif runs:
+            self.status.setText("Run another full check to see what changed since this one.")
         else:
             self.status.setText("Run a full check from the Dashboard to start your history.")
+
+
+class DownloadWorker(QThread):
+    progress = Signal(int, int)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, info):
+        super().__init__()
+        self.info = info
+
+    def run(self):
+        try:
+            self.done.emit(updater.download(self.info, progress=lambda a, b: self.progress.emit(a, b)))
+        except Exception as e:
+            self.failed.emit(str(e) if isinstance(e, updater.UpdateError) else f"{type(e).__name__}: {e}")
+
+
+class UpdatesPage(QWidget):
+    found = Signal(object, str)   # (UpdateInfo, "manual" | "startup" | "background")
+    skipped = Signal()
+    install_started = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.info = None
+        lay = QVBoxLayout(self)
+        lay.addWidget(heading("Updates", f"You have version {__version__}. New versions are published on GitHub and "
+                                         "checked against a published checksum before anything is installed."))
+        row = QHBoxLayout()
+        self.check_btn = QPushButton("Check for updates")
+        self.check_btn.clicked.connect(lambda: self.check("manual"))
+        self.install_btn = QPushButton("Install update")
+        self.install_btn.setEnabled(False)
+        self.install_btn.clicked.connect(lambda: self.install(True))
+        self.skip_btn = QPushButton("Skip this version")
+        self.skip_btn.setEnabled(False)
+        self.skip_btn.clicked.connect(self.skip)
+        for b in (self.check_btn, self.install_btn, self.skip_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.hide()
+        lay.addWidget(self.bar)
+        self.notes = QTextEdit()
+        self.notes.setReadOnly(True)
+        self.notes.setPlaceholderText("Release notes appear here when an update is available.")
+        lay.addWidget(self.notes, 1)
+
+    def check(self, mode: str = "manual"):
+        self.check_btn.setEnabled(False)
+        if mode == "manual":
+            self.status.setText("Checking GitHub for updates...")
+        self.worker = Worker(updater.check)
+        self.worker.done.connect(lambda info, m=mode: self._checked(info, m))
+        self.worker.failed.connect(lambda msg, m=mode: self._check_failed(msg, m))
+        self.worker.start()
+
+    def _checked(self, info, mode: str):
+        self.check_btn.setEnabled(True)
+        if info is None:
+            if mode == "manual":
+                self.status.setText(f"You're up to date (version {__version__}).")
+            return
+        self.info = info
+        self.status.setText(f"Version {info.version} is available (you have {__version__}).")
+        self.notes.setPlainText(info.notes or "No release notes.")
+        self.install_btn.setEnabled(True)
+        self.skip_btn.setEnabled(True)
+        self.found.emit(info, mode)
+
+    def _check_failed(self, msg: str, mode: str):
+        self.check_btn.setEnabled(True)
+        if mode == "manual":
+            self.status.setText(msg)
+
+    def install(self, confirm: bool = True):
+        if not self.info:
+            return
+        if confirm and QMessageBox.question(
+                self, "Install update?",
+                f"Download and install AegisGuard {self.info.version}?\n\nAegisGuard will close, Windows will ask for "
+                "administrator permission, and AegisGuard restarts when the update finishes.") != QMessageBox.Yes:
+            return
+        for b in (self.check_btn, self.install_btn, self.skip_btn):
+            b.setEnabled(False)
+        self.bar.setValue(0)
+        self.bar.show()
+        self.status.setText("Downloading and verifying...")
+        self.dl = DownloadWorker(self.info)
+        self.dl.progress.connect(lambda a, t: self.bar.setValue(a * 100 // t if t else 0))
+        self.dl.done.connect(self._downloaded)
+        self.dl.failed.connect(self._download_failed)
+        self.dl.start()
+
+    def _download_failed(self, msg: str):
+        self.bar.hide()
+        self.status.setText(msg)
+        self.check_btn.setEnabled(True)
+        self.install_btn.setEnabled(True)
+        self.skip_btn.setEnabled(True)
+
+    def _downloaded(self, d):
+        try:
+            updater.launch_installer(d)
+        except updater.UpdateError as e:
+            self._download_failed(str(e))
+            return
+        self.status.setText("Installer started. AegisGuard will close now and restart when the update finishes.")
+        self.install_started.emit()
+
+    def skip(self):
+        if self.info:
+            updater.skip_version(self.info.version)
+            self.status.setText(f"Version {self.info.version} skipped. You'll be told about newer versions.")
+            self.install_btn.setEnabled(False)
+            self.skip_btn.setEnabled(False)
+            self.skipped.emit()
 
 
 class AlertBridge(QObject):
@@ -599,6 +723,7 @@ class MainWindow(QMainWindow):
         self.nav.setFixedWidth(190)
         self.stack = QStackedWidget()
         self.alerts_page = AlertsPage()
+        self.updates_page = UpdatesPage()
         pages = [
             ("Dashboard", DashboardPage()),
             ("Malware Scan", ModulePage("Malware Scan", "Scans your Downloads and Temp folders for known threats and disguised executables.",
@@ -613,10 +738,12 @@ class MainWindow(QMainWindow):
             ("Alerts", self.alerts_page),
             ("History", HistoryPage()),
             ("Reports", ReportsPage()),
+            ("Updates", self.updates_page),
         ]
         for name, page in pages:
             self.nav.addItem(name)
             self.stack.addWidget(page)
+        self.updates_row = len(pages) - 1
         self.nav.currentRowChanged.connect(self._switch)
         self.nav.setCurrentRow(0)
         lay.addWidget(self.nav)
@@ -625,6 +752,68 @@ class MainWindow(QMainWindow):
         body.addWidget(self.stack)
         lay.addLayout(body, 1)
         self._setup_protection()
+        self._setup_updates()
+
+    # ---- updates ------------------------------------------------------------------------
+    def _setup_updates(self):
+        self.pending_update = None
+        self._last_toast_update = False
+        self.updates_page.found.connect(self._update_found)
+        self.updates_page.skipped.connect(self._clear_update_badge)
+        self.updates_page.install_started.connect(self._quit)
+        if self.tray:
+            self.tray.messageClicked.connect(self._on_toast_clicked)
+        if updater.enabled():
+            QTimer.singleShot(4000, lambda: self._auto_check("startup", 900))
+            self.update_timer = QTimer(self)
+            self.update_timer.timeout.connect(lambda: self._auto_check("background", 6 * 3600 - 60))
+            self.update_timer.start(6 * 3600 * 1000)
+
+    def _auto_check(self, mode: str, min_interval: float):
+        if updater.due(min_interval):
+            self.updates_page.check(mode)
+
+    def _update_found(self, info, mode: str):
+        if mode != "manual" and updater.is_skipped(info.version):
+            return
+        self.pending_update = info
+        self.nav.item(self.updates_row).setText("Updates  \u25cf")
+        if mode == "startup" and self.isVisible():
+            self._update_dialog(info)
+        elif mode != "manual" and self.tray:
+            self._last_toast_update = True
+            self.tray.showMessage("AegisGuard update available",
+                                  f"Version {info.version} is ready. Open the Updates tab to install it.",
+                                  QSystemTrayIcon.Information, 10000)
+
+    def _update_dialog(self, info):
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setText(f"AegisGuard {info.version} is available (you have {__version__}).")
+        box.setInformativeText("Install it now? AegisGuard will restart when the update finishes.")
+        install = box.addButton("Install now", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        skip = box.addButton("Skip this version", QMessageBox.DestructiveRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is install:
+            self.nav.setCurrentRow(self.updates_row)
+            self.updates_page.install(confirm=False)
+        elif clicked is skip:
+            updater.skip_version(info.version)
+            self._clear_update_badge()
+        else:
+            self.nav.setCurrentRow(self.updates_row)
+
+    def _clear_update_badge(self):
+        self.pending_update = None
+        self.nav.item(self.updates_row).setText("Updates")
+
+    def _on_toast_clicked(self):
+        self._show_window()
+        if self._last_toast_update:
+            self.nav.setCurrentRow(self.updates_row)
+        self._last_toast_update = False
 
     # ---- background protection + tray -------------------------------------------------
     def _setup_protection(self):
@@ -648,6 +837,7 @@ class MainWindow(QMainWindow):
         self.monitor.start()
 
     def _on_alert(self, f: Finding):
+        self._last_toast_update = False
         self.alerts_page.add(f)
         if self.tray:
             self.tray.showMessage(f"AegisGuard - {f.severity.value.upper()}",

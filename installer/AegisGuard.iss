@@ -2,7 +2,7 @@
 ; Build with installer\build.ps1 (it passes /DMyAppVersion=...). Needs Inno Setup 6 (free).
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "1.0.0"
 #endif
 #define MyAppName "AegisGuard"
 #define MyAppExe "AegisGuard.exe"
@@ -28,6 +28,7 @@ MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
+UsePreviousTasks=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Shortcuts:"
@@ -48,6 +49,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: deskto
 ; Start-at-sign-in task: runs with the user's highest available rights so network/firewall checks see everything
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$a = New-ScheduledTaskAction -Execute '{app}\{#MyAppExe}' -Argument '--minimized'; $t = New-ScheduledTaskTrigger -AtLogOn; $p = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Highest; Register-ScheduledTask -TaskName 'AegisGuard' -Action $a -Trigger $t -Principal $p -Force"""; Flags: runhidden; Tasks: startup; StatusMsg: "Setting up start at sign-in..."
 Filename: "{app}\{#MyAppExe}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; After an in-app (silent) update, bring AegisGuard straight back up in the tray
+Filename: "{app}\{#MyAppExe}"; Parameters: "--minimized"; Flags: nowait runasoriginaluser skipifnotsilent
 
 [UninstallRun]
 Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExe}"; Flags: runhidden; RunOnceId: "KillApp"

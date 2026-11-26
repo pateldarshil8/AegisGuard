@@ -2,7 +2,7 @@
 
 Endpoint security and system health suite for Windows 10/11, in one desktop app.
 
-*Status: v0.1, early release. Works, but it is a young project: it complements Windows Defender, it does not replace it.*
+*Status: v1.0. Works, but it is a young project: it complements Windows Defender, it does not replace it.*
 
 ## What it does
 

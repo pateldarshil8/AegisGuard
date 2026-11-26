@@ -10,7 +10,7 @@ from .core import config, settings
 from pathlib import Path
 
 from .modules import (cleanup, firewall, fixer, fwrules, health, monitor, netmon, processes, quarantine,
-                      history, remediation, reports, scanner, signatures)
+                      history, remediation, reports, scanner, signatures, updater)
 
 
 def _fix_flow(auto_yes: bool) -> int:
@@ -160,6 +160,30 @@ def _history_cmd(limit: int) -> int:
     return 0
 
 
+def _update_cmd(install: bool) -> int:
+    try:
+        info = updater.check()
+        if not info:
+            print(f"You're up to date (version {__version__}).")
+            return 0
+        print(f"Update available: {info.version} (you have {__version__}).")
+        if info.notes:
+            print(info.notes[:600])
+        if not install:
+            print("\nInstall it with: aegisguard update --install")
+            return 0
+        if input("\nDownload and install now? AegisGuard will close. [y/N] ").strip().lower() != "y":
+            print("Cancelled.")
+            return 0
+        d = updater.download(info, progress=lambda a, b: print(f"\r  Downloading... {a * 100 // b if b else 0}%", end=""))
+        print("\n  Verified. Starting installer (approve the Windows administrator prompt).")
+        updater.launch_installer(d)
+    except updater.UpdateError as e:
+        print(f"Error: {e}")
+        return 1
+    return 0
+
+
 def _watch(interval: int) -> int:
     """Re-check connections every `interval` seconds; print only new findings. Ctrl+C to stop."""
     seen: set[tuple] = set()
@@ -204,6 +228,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("space", help="show which folders use the most disk space (read-only)")
     sp.add_argument("--path", help="folder to measure (default: your user folder)")
     sp.add_argument("--top", type=int, default=15)
+    ud = sub.add_parser("update", help="check GitHub for a newer AegisGuard release")
+    ud.add_argument("--install", action="store_true", help="download, verify and install it")
     hp = sub.add_parser("history", help="show past full-check scores and what changed")
     hp.add_argument("--limit", type=int, default=15)
     us = sub.add_parser("update-signatures", help="download the latest malware hash list")
@@ -231,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         launch(start_hidden=args.minimized)
         return 0
+    if args.cmd == "update":
+        return _update_cmd(args.install)
     if args.cmd == "history":
         return _history_cmd(args.limit)
     if args.cmd == "update-signatures":
