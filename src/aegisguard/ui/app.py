@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QObject, QPointF, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QLockFile, QObject, QPointF, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QListWidget,
                                QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
@@ -614,11 +614,18 @@ class MainWindow(QMainWindow):
             w.refresh()
 
 
-def launch() -> None:
+def launch(start_hidden: bool = False) -> None:
+    """Open the app. start_hidden=True (used at sign-in) leaves it in the system tray with protection running."""
     config.ensure_dirs()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyleSheet(STYLE)
     app.setQuitOnLastWindowClosed(False)
+    lock = QLockFile(str(config.DATA_DIR / "ui.lock"))  # one running copy at a time (two monitors would double-alert)
+    if not lock.tryLock(300):
+        QMessageBox.information(None, "AegisGuard", "AegisGuard is already running.\nLook for the shield icon in the system tray.")
+        return
     win = MainWindow()
-    win.show()
+    if not (start_hidden and win.tray):
+        win.show()
     app.exec()
+    lock.unlock()

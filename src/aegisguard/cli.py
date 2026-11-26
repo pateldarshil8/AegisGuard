@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import time
 
@@ -171,17 +172,25 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--top", type=int, default=15)
     sub.add_parser("monitor", help="run background protection in this window (Ctrl+C to stop)")
     sub.add_parser("full", help="run all checks and write a report")
-    sub.add_parser("ui", help="launch desktop UI")
+    up2 = sub.add_parser("ui", help="launch desktop UI")
+    up2.add_argument("--minimized", action="store_true", help="start hidden in the system tray")
     args = p.parse_args(argv)
 
     config.ensure_dirs()
     if args.cmd == "ui":
+        if getattr(sys, "frozen", False):  # installed build: the window lives in AegisGuard.exe next to this tool
+            gui = Path(sys.executable).with_name("AegisGuard.exe")
+            if not gui.exists():
+                print("AegisGuard.exe was not found next to this program.")
+                return 1
+            subprocess.Popen([str(gui), *(["--minimized"] if args.minimized else [])])
+            return 0
         try:
             from .ui.app import launch
         except ImportError:
             print("The UI needs PySide6. Install it with:  pip install -e .[ui]")
             return 1
-        launch()
+        launch(start_hidden=args.minimized)
         return 0
     if args.cmd == "cleanup":
         return _cleanup_cmd(args.min_age)

@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
-ROOT = Path(os.environ.get("AEGISGUARD_HOME", r"C:\AegisGuard"))
+
+def _default_root() -> Path:
+    # Installed (PyInstaller) build: Program Files is read-only for normal users, so data goes in ProgramData.
+    if getattr(sys, "frozen", False):
+        return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "AegisGuard"
+    return Path(r"C:\AegisGuard")  # development checkout
+
+
+ROOT = Path(os.environ.get("AEGISGUARD_HOME") or _default_root())
 DATA_DIR = ROOT / "data"
 REPORTS_DIR = DATA_DIR / "reports"
 QUARANTINE_DIR = DATA_DIR / "quarantine"

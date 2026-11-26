@@ -4,3 +4,7 @@ __pycache__/
 data/
 .env
 .pytest_tmp/
+build/
+dist/
+dist-installer/
+installer/aegisguard.ico
