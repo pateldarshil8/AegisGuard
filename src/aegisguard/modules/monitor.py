@@ -21,7 +21,7 @@ from typing import Callable
 
 from ..core import config, settings as settings_mod
 from ..core.models import Finding, ScanResult
-from . import firewall, fixer, health, netmon, processes, reports, scanner
+from . import firewall, fixer, health, netmon, processes, reports, scanner, signatures
 
 SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 SKIP_EXT = {".crdownload", ".part", ".partial", ".tmp", ".download"}  # downloads still in progress
@@ -89,6 +89,7 @@ def default_tasks(s: settings_mod.Settings) -> list[Task]:
         Task("files", s.file_poll_seconds, watcher.poll),
         Task("processes", s.process_seconds, processes.run),
         Task("network", s.network_seconds, netmon.run),
+        Task("signatures", 6 * 3600, lambda: signatures.auto_update(s)),
         Task("audit", s.audit_minutes * 60,
              lambda: reports.merge([scanner.run(), fixer.run(), firewall.run(), health.run()])),
     ]

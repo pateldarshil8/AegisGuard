@@ -62,6 +62,13 @@ def load_known_bad() -> dict[str, str]:
                 out[digest.lower()] = name.strip() or "Listed threat"
     except OSError:
         pass
+    try:  # downloaded feed (see signatures.py); your own entries above take precedence
+        for line in (config.DATA_DIR / "threat_feed.txt").read_text(encoding="utf-8").splitlines():
+            h = line.strip().lower()
+            if re.fullmatch(r"[0-9a-f]{64}", h):
+                out.setdefault(h, "Known malware (threat feed)")
+    except OSError:
+        pass
     return out
 
 

@@ -10,7 +10,7 @@ from .core import config, settings
 from pathlib import Path
 
 from .modules import (cleanup, firewall, fixer, fwrules, health, monitor, netmon, processes, quarantine,
-                      remediation, reports, scanner)
+                      remediation, reports, scanner, signatures)
 
 
 def _fix_flow(auto_yes: bool) -> int:
@@ -126,6 +126,21 @@ def _monitor_cmd() -> int:
     return 0
 
 
+def _signatures_cmd(force: bool, show_status: bool) -> int:
+    if show_status:
+        st = signatures.status()
+        print(f"{st['count']:,} feed hashes, last updated {st['updated']} from {st['source']}." if st
+              else "No threat feed downloaded yet. Run: aegisguard update-signatures")
+        return 0
+    try:
+        r = signatures.update(force=force)
+    except signatures.SignatureError as e:
+        print(f"Error: {e}")
+        return 1
+    print(r.message)
+    return 0
+
+
 def _watch(interval: int) -> int:
     """Re-check connections every `interval` seconds; print only new findings. Ctrl+C to stop."""
     seen: set[tuple] = set()
@@ -170,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("space", help="show which folders use the most disk space (read-only)")
     sp.add_argument("--path", help="folder to measure (default: your user folder)")
     sp.add_argument("--top", type=int, default=15)
+    us = sub.add_parser("update-signatures", help="download the latest malware hash list")
+    us.add_argument("--force", action="store_true", help="ignore the once-per-hour limit")
+    us.add_argument("--status", action="store_true", help="show when the list was last updated")
     sub.add_parser("monitor", help="run background protection in this window (Ctrl+C to stop)")
     sub.add_parser("full", help="run all checks and write a report")
     up2 = sub.add_parser("ui", help="launch desktop UI")
@@ -192,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         launch(start_hidden=args.minimized)
         return 0
+    if args.cmd == "update-signatures":
+        return _signatures_cmd(args.force, args.status)
     if args.cmd == "cleanup":
         return _cleanup_cmd(args.min_age)
     if args.cmd == "space":

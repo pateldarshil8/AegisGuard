@@ -23,6 +23,7 @@ class Settings:
     network_seconds: int = 60
     audit_minutes: int = 60
     min_alert_severity: str = "medium"  # info | low | medium | high | critical
+    signature_feed_url: str = "https://mb-api.abuse.ch/v2/files/exports/{auth_key}/recent.csv"
 
 
 def path() -> Path:
