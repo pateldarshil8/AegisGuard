@@ -1,4 +1,4 @@
-# AegisGuard AI
+# AegisGuard
 
 Endpoint security and system health suite for Windows 10/11, in one desktop app.
 
@@ -16,7 +16,11 @@ Endpoint security and system health suite for Windows 10/11, in one desktop app.
 | **Disk cleanup** | Frees old temp/cache files and shows where your space is going. Never touches your documents. |
 | **Security score & history** | Score per full check, trend, and what changed since last time. |
 
-Everything that changes your system asks first. The scanner and monitors are read-only. No AI or cloud service is required; the only network call is the optional signature update.
+Everything that changes your system asks first. The scanner and monitors are read-only. No cloud service is required; the only network call is the optional signature update.
+
+## Administrator password
+
+Open **Administrator** in the app to set a password. Once set, applying fixes, quarantine restore/delete, disk cleanup, installing updates, and pausing or quitting protection all ask for it first. A correct password unlocks those actions for a few minutes (default 10, adjustable), then they lock again, and repeated wrong guesses add a growing delay. Only a salted PBKDF2 hash is stored (`data\admin.json`). This protects the app itself; it is not a substitute for a Windows account password.
 
 ## Install
 Download `AegisGuardSetup-<version>.exe` from the [Releases](https://github.com/pateldarshil8/AegisGuard/releases) page and run it.

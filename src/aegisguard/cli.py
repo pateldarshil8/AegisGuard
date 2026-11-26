@@ -202,7 +202,7 @@ def _watch(interval: int) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="aegisguard", description="AegisGuard AI endpoint security suite")
+    p = argparse.ArgumentParser(prog="aegisguard", description="AegisGuard endpoint security suite")
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health", help="CPU/memory/disk snapshot")

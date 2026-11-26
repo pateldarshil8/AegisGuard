@@ -11,7 +11,8 @@ from pathlib import Path
 import psutil
 from PySide6.QtCore import QLockFile, QObject, QPointF, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QListWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+                               QLineEdit, QListWidget, QSpinBox,
                                QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
                                QSystemTrayIcon,
                                QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHe
 from .. import __version__
 from datetime import datetime
 
-from ..core import config, settings
+from ..core import admin, config, settings
 from ..core.models import Finding, ScanResult
 from ..core.scoring import security_score
 from ..modules import (cleanup, firewall, fixer, health, history, monitor, netmon, processes, quarantine, remediation,
@@ -89,6 +90,25 @@ def fill_findings(t: QTableWidget, findings: list[Finding]) -> None:
     t.setColumnWidth(0, 80)
     t.setColumnWidth(1, 90)
     t.setColumnWidth(2, 380)
+
+
+def require_admin(parent) -> bool:
+    """Ask for the administrator password when one is set and the session is locked."""
+    if admin.authorized():
+        return True
+    while True:
+        wait = admin.locked_out_seconds()
+        if wait:
+            QMessageBox.warning(parent, "Administrator password", f"Too many wrong attempts. Try again in {wait} seconds.")
+            return False
+        pw, ok = QInputDialog.getText(parent, "Administrator password",
+                                      "This action needs the AegisGuard administrator password:", QLineEdit.Password)
+        if not ok:
+            return False
+        good, msg = admin.unlock(pw)
+        if good:
+            return True
+        QMessageBox.warning(parent, "Administrator password", msg)
 
 
 def heading(text: str, sub: str = "") -> QWidget:
@@ -285,7 +305,7 @@ class UpdatesPage(QWidget):
             self.status.setText(msg)
 
     def install(self, confirm: bool = True):
-        if not self.info:
+        if not self.info or not require_admin(self):
             return
         if confirm and QMessageBox.question(
                 self, "Install update?",
@@ -404,6 +424,8 @@ class CleanupPage(QWidget):
         self.find_btn.setEnabled(True)
 
     def clean(self):
+        if not require_admin(self):
+            return
         total = sum(c.size for c in self.cands)
         if QMessageBox.question(self, "Delete files?",
                                 f"Permanently delete {len(self.cands)} temp/cache file(s) ({cleanup.human(total)})?\n"
@@ -556,6 +578,8 @@ class ModulePage(QWidget):
             QMessageBox.information(self, "Quarantine", "Select a finding that has a file path.")
             return
         f = self.findings[r]
+        if not require_admin(self):
+            return
         if QMessageBox.question(self, "Quarantine file?",
                                 f"Move this file to quarantine?\n\n{f.path}\n\nYou can restore it later.") != QMessageBox.Yes:
             return
@@ -610,6 +634,8 @@ class FixesPage(QWidget):
         self.btn.setEnabled(True)
 
     def apply(self, fx: fixer.Fix):
+        if not require_admin(self):
+            return
         admin_note = "" if is_admin() or not fx.needs_admin else "\n\nNote: this needs administrator rights; run AegisGuard as administrator."
         cmds = "\n".join(' '.join(c) for c in [fx.command, *fx.extra_commands])
         msg = f"{fx.finding.title}\n\nThis will run:\n{cmds}{admin_note}\n\nApply this fix?"
@@ -654,7 +680,7 @@ class QuarantinePage(QWidget):
 
     def restore(self):
         i = self._selected()
-        if not i:
+        if not i or not require_admin(self):
             return
         try:
             dest = quarantine.restore(i.id)
@@ -665,7 +691,7 @@ class QuarantinePage(QWidget):
 
     def delete(self):
         i = self._selected()
-        if not i:
+        if not i or not require_admin(self):
             return
         if QMessageBox.question(self, "Delete permanently?",
                                 f"Permanently delete the quarantined copy of\n{i.original_path}?\nThis cannot be undone.") != QMessageBox.Yes:
@@ -710,10 +736,90 @@ class ReportsPage(QWidget):
         self.worker.start()
 
 
+class AdminPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.addWidget(heading("Administrator", "Protect AegisGuard's own actions with a password: applying fixes, quarantine "
+                                               "restore/delete, disk cleanup, installing updates, pausing or quitting protection. "
+                                               "This locks the app itself; it does not replace a Windows account password."))
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+        row = QHBoxLayout()
+        self.set_btn = QPushButton("Set password")
+        self.set_btn.clicked.connect(self.set_password)
+        self.remove_btn = QPushButton("Remove password")
+        self.remove_btn.setObjectName("danger")
+        self.remove_btn.clicked.connect(self.remove_password)
+        self.lock_btn = QPushButton("Lock now")
+        self.lock_btn.clicked.connect(self.lock_now)
+        for b in (self.set_btn, self.remove_btn, self.lock_btn):
+            row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Lock again after"))
+        self.minutes = QSpinBox()
+        self.minutes.setRange(1, 120)
+        self.minutes.setSuffix(" min")
+        self.minutes.setValue(admin.autolock_minutes())
+        self.minutes.editingFinished.connect(lambda: admin.set_autolock_minutes(self.minutes.value()))
+        row2.addWidget(self.minutes)
+        row2.addStretch(1)
+        lay.addLayout(row2)
+        lay.addStretch(1)
+        self.refresh()
+
+    def refresh(self):
+        has = admin.is_set()
+        self.set_btn.setText("Change password" if has else "Set password")
+        self.remove_btn.setEnabled(has)
+        self.lock_btn.setEnabled(has and admin.is_unlocked())
+        if not has:
+            self.status.setText("No administrator password is set. Anyone using this window can apply fixes and delete files (each still asks to confirm).")
+        else:
+            self.status.setText("Unlocked for this session." if admin.is_unlocked() else "Locked. Protected actions ask for the password.")
+
+    def _ask(self, label: str) -> str | None:
+        text, ok = QInputDialog.getText(self, "Administrator password", label, QLineEdit.Password)
+        return text if ok else None
+
+    def set_password(self):
+        current = ""
+        if admin.is_set():
+            current = self._ask("Current password:")
+            if current is None:
+                return
+        new = self._ask(f"New password (at least {admin.MIN_LENGTH} characters):")
+        if new is None:
+            return
+        again = self._ask("Type the new password again:")
+        if again is None:
+            return
+        if new != again:
+            QMessageBox.warning(self, "Administrator password", "The two passwords do not match.")
+            return
+        ok, msg = admin.set_password(new, current)
+        (QMessageBox.information if ok else QMessageBox.warning)(self, "Administrator password", msg)
+        self.refresh()
+
+    def remove_password(self):
+        current = self._ask("Current password:")
+        if current is None:
+            return
+        ok, msg = admin.clear_password(current)
+        (QMessageBox.information if ok else QMessageBox.warning)(self, "Administrator password", msg)
+        self.refresh()
+
+    def lock_now(self):
+        admin.lock()
+        self.refresh()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"AegisGuard AI {__version__}")
+        self.setWindowTitle(f"AegisGuard {__version__}")
         self.resize(1050, 680)
         root = QWidget()
         self.setCentralWidget(root)
@@ -738,6 +844,7 @@ class MainWindow(QMainWindow):
             ("Alerts", self.alerts_page),
             ("History", HistoryPage()),
             ("Reports", ReportsPage()),
+            ("Administrator", AdminPage()),
             ("Updates", self.updates_page),
         ]
         for name, page in pages:
@@ -830,7 +937,7 @@ class MainWindow(QMainWindow):
             self.toggle_action = self.tray_menu.addAction("Pause protection")
             self.toggle_action.triggered.connect(self._toggle_protection)
             self.tray_menu.addSeparator()
-            self.tray_menu.addAction("Quit AegisGuard").triggered.connect(self._quit)
+            self.tray_menu.addAction("Quit AegisGuard").triggered.connect(self._request_quit)
             self.tray.setContextMenu(self.tray_menu)
             self.tray.activated.connect(lambda r: self._show_window() if r == QSystemTrayIcon.Trigger else None)
             self.tray.show()
@@ -850,11 +957,17 @@ class MainWindow(QMainWindow):
 
     def _toggle_protection(self):
         if self.monitor.running:
+            if not require_admin(self):
+                return
             self.monitor.stop()
             self.toggle_action.setText("Resume protection")
         else:
             self.monitor.start()
             self.toggle_action.setText("Pause protection")
+
+    def _request_quit(self):
+        if require_admin(self):
+            self._quit()
 
     def _quit(self):
         self._quitting = True
@@ -875,7 +988,7 @@ class MainWindow(QMainWindow):
     def _switch(self, row: int):
         self.stack.setCurrentIndex(row)
         w = self.stack.currentWidget()
-        if isinstance(w, (QuarantinePage, HistoryPage)):
+        if isinstance(w, (QuarantinePage, HistoryPage, AdminPage)):
             w.refresh()
 
 

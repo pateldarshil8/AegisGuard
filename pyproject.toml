@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aegisguard"
 version = "1.0.0"
-description = "AegisGuard AI - endpoint security and system health suite for Windows"
+description = "AegisGuard - endpoint security and system health suite for Windows"
 requires-python = ">=3.10"
 dependencies = ["psutil>=5.9"]
 

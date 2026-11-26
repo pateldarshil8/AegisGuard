@@ -1,4 +1,4 @@
-"""Report generation. Local Markdown/JSON now; AI summaries via the optional `ai` extra later."""
+"""Report generation. Local Markdown and JSON reports."""
 from __future__ import annotations
 
 import json
