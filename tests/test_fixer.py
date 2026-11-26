@@ -60,3 +60,14 @@ def test_apply_runs_all_commands_and_stops_on_failure(monkeypatch):
     calls.clear()
     ok, msg = fixer.apply(fixer.Fix(f, "d", ["bad"], True, [["never"]]), True)
     assert ok is False and calls == [["bad"]]
+
+
+def test_helper_programs_run_without_a_console_window(monkeypatch):
+    import subprocess
+
+    from aegisguard.core import proc
+    seen = {}
+    monkeypatch.setattr(proc, "NO_WINDOW", 0x08000000)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: seen.update(kw) or "done")
+    assert proc.run(["netsh"], capture_output=True) == "done"
+    assert seen["creationflags"] & 0x08000000

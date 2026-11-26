@@ -10,6 +10,7 @@ import ipaddress
 import subprocess
 from pathlib import PureWindowsPath
 
+from ..core import proc
 from ..core.models import Finding, Severity
 from .fixer import Fix
 
@@ -63,7 +64,7 @@ def remove_command(rule_name: str) -> list[str]:
 
 def list_rules() -> list[str]:
     try:
-        r = subprocess.run(_netsh("show", "rule", "name=all"), capture_output=True, text=True, timeout=60)
+        r = proc.run(_netsh("show", "rule", "name=all"), capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return []
     names: list[str] = []

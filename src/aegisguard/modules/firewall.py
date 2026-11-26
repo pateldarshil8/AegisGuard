@@ -4,13 +4,14 @@ from __future__ import annotations
 import re
 import subprocess
 
+from ..core import proc
 from ..core.models import Finding, ScanResult, Severity
 
 
 def profile_states() -> dict[str, str] | None:
     """{'Domain': 'ON', 'Private': 'ON', 'Public': 'ON'}, or None if netsh can't be queried."""
     try:
-        out = subprocess.run(["netsh", "advfirewall", "show", "allprofiles", "state"],
+        out = proc.run(["netsh", "advfirewall", "show", "allprofiles", "state"],
                              capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
         return None

@@ -11,6 +11,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 
+from ..core import proc
 from ..core.models import Finding, ScanResult, Severity
 from . import firewall
 
@@ -67,7 +68,7 @@ def _run_keys() -> dict[str, str]:
 
 def _defender_realtime_on() -> bool | None:
     try:
-        r = subprocess.run(
+        r = proc.run(
             ["powershell", "-NoProfile", "-Command", "(Get-MpComputerStatus).RealTimeProtectionEnabled"],
             capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
@@ -138,7 +139,7 @@ def apply(fix: Fix, approved: bool) -> tuple[bool, str]:
     outputs: list[str] = []
     for cmd in [fix.command, *fix.extra_commands]:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            r = proc.run(cmd, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError) as e:
             return False, str(e)
         out = (r.stdout or r.stderr).strip()
