@@ -221,7 +221,7 @@ class CleanupPage(QWidget):
 
     def space(self):
         self.space_btn.setEnabled(False)
-        self.status.setText("Measuring your user folder (up to 30 seconds)...")
+        self.status.setText("Measuring your user folder (up to 45 seconds)...")
         self.worker = Worker(lambda: cleanup.largest_items(Path.home()))
         self.worker.done.connect(self._space_done)
         self.worker.failed.connect(lambda m: (self.status.setText(m), self.space_btn.setEnabled(True)))

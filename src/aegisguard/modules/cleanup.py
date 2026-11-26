@@ -120,33 +120,42 @@ def _dir_size(path: Path, deadline: float, clock: Callable[[], float]) -> tuple[
     return total, complete
 
 
-def largest_items(root: Path, top: int = 15, max_seconds: float = 30.0,
-                  clock: Callable[[], float] = time.monotonic) -> tuple[list[tuple[str, int]], bool]:
-    """Biggest entries directly under root. Returns ([(path, bytes)], complete). Stops at the time budget."""
+def largest_items(root: Path, top: int = 15, max_seconds: float = 45.0,
+                  clock: Callable[[], float] = time.monotonic,
+                  workers: int = 8) -> tuple[list[tuple[str, int]], bool]:
+    """Biggest entries directly under root. Returns ([(path, bytes)], complete).
+
+    Folders are measured in parallel so one huge folder (e.g. AppData) can't starve the rest. If the time budget
+    runs out, folders still being measured report what they have so far and complete is False.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     deadline = clock() + max_seconds
-    sizes: list[tuple[str, int]] = []
-    complete = True
     try:
         entries = list(os.scandir(root))
     except OSError:
         return [], True
-    for e in entries:
-        if clock() > deadline:
-            complete = False
-            break
+
+    def measure(e: os.DirEntry) -> tuple[str, int, bool] | None:
         try:
             if _is_link(e):
-                continue
+                return None
             if e.is_file(follow_symlinks=False):
-                sizes.append((e.path, e.stat(follow_symlinks=False).st_size))
-            elif e.is_dir(follow_symlinks=False):
+                return e.path, e.stat(follow_symlinks=False).st_size, True
+            if e.is_dir(follow_symlinks=False):
+                if clock() > deadline:
+                    return e.path, 0, False
                 size, done = _dir_size(Path(e.path), deadline, clock)
-                sizes.append((e.path, size))
-                complete = complete and done
+                return e.path, size, done
         except OSError:
-            continue
-    sizes.sort(key=lambda x: x[1], reverse=True)
-    return sizes[:top], complete
+            return None
+        return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = [r for r in pool.map(measure, entries) if r]
+    complete = all(done for _, _, done in results)
+    results.sort(key=lambda r: r[1], reverse=True)
+    return [(p, size) for p, size, _ in results[:top]], complete
 
 
 def human(n: int) -> str:

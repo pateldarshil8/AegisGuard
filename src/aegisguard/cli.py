@@ -98,7 +98,7 @@ def _cleanup_cmd(min_age: float) -> int:
 
 def _space_cmd(path: str | None, top: int) -> int:
     root = Path(path) if path else Path.home()
-    print(f"Measuring {root} (up to 30 seconds)...")
+    print(f"Measuring {root} (up to 45 seconds)...")
     items, complete = cleanup.largest_items(root, top)
     for p, size in items:
         print(f"{cleanup.human(size):>10}  {p}")
