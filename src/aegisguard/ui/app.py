@@ -10,7 +10,7 @@ from pathlib import Path
 
 import psutil
 from PySide6.QtCore import QLockFile, QObject, QPointF, QThread, QTimer, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QLabel, QListWidget,
                                QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
                                QSystemTrayIcon,
@@ -21,11 +21,11 @@ from datetime import datetime
 
 from ..core import config, settings
 from ..core.models import Finding, ScanResult
-from ..modules import (cleanup, firewall, fixer, health, monitor, netmon, processes, quarantine, remediation,
+from ..core.scoring import security_score
+from ..modules import (cleanup, firewall, fixer, health, history, monitor, netmon, processes, quarantine, remediation,
                        reports, scanner)
 
 SEV_COLORS = {"critical": "#ff5370", "high": "#ff8a65", "medium": "#ffcb6b", "low": "#82aaff", "info": "#9aa5b1"}
-SEV_WEIGHT = {"critical": 30, "high": 15, "medium": 7, "low": 2, "info": 0}
 
 STYLE = """
 QMainWindow, QWidget { background: #14181f; color: #e6e9ef; font-family: 'Segoe UI'; font-size: 13px; }
@@ -49,10 +49,6 @@ def is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
     except (AttributeError, OSError):
         return False
-
-
-def security_score(findings: list[Finding]) -> int:
-    return max(0, 100 - sum(SEV_WEIGHT[f.severity.value] for f in findings))
 
 
 class Worker(QThread):
@@ -113,6 +109,8 @@ def heading(text: str, sub: str = "") -> QWidget:
 def full_check() -> ScanResult:
     merged = reports.merge([health.run(), scanner.run(), processes.run(), firewall.run(), fixer.run(), netmon.run()])
     reports.write(merged)
+    _, prev = history.record(merged)
+    merged.meta["prev_score"] = prev.score if prev else None
     return merged
 
 
@@ -130,6 +128,80 @@ def make_icon() -> QIcon:
                              QPointF(20, 38), QPointF(18, 22)]))
     p.end()
     return QIcon(pm)
+
+
+class TrendWidget(QWidget):
+    """Small line chart of security scores over time (oldest on the left)."""
+
+    def __init__(self):
+        super().__init__()
+        self.scores: list[int] = []
+        self.setMinimumHeight(150)
+
+    def set_scores(self, scores: list[int]):
+        self.scores = scores
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h, m = self.width(), self.height(), 26
+        p.fillRect(self.rect(), QColor("#0f1319"))
+        p.setPen(QColor("#232a36"))
+        for v in (0, 50, 100):
+            y = int(h - m - (h - 2 * m) * v / 100)
+            p.drawLine(m, y, w - m, y)
+            p.setPen(QColor("#9aa5b1"))
+            p.drawText(2, y + 4, str(v))
+            p.setPen(QColor("#232a36"))
+        if not self.scores:
+            p.setPen(QColor("#9aa5b1"))
+            p.drawText(self.rect(), Qt.AlignCenter, "No full checks recorded yet")
+            p.end()
+            return
+        n = len(self.scores)
+        pts = [QPointF(m + (w - 2 * m) * (i / (n - 1) if n > 1 else 0.5), h - m - (h - 2 * m) * s / 100)
+               for i, s in enumerate(self.scores)]
+        p.setPen(QPen(QColor("#2f6fed"), 2))
+        for a, b in zip(pts, pts[1:]):
+            p.drawLine(a, b)
+        p.setBrush(QColor("#2f6fed"))
+        for pt in pts:
+            p.drawEllipse(pt, 3, 3)
+        p.end()
+
+
+class HistoryPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.addWidget(heading("History", "Security score from each full check, and what changed since the one before."))
+        self.trend = TrendWidget()
+        lay.addWidget(self.trend)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        lay.addWidget(self.status)
+        self.table = make_table(["When", "Score", "Critical", "High", "Medium", "Low", "Files scanned"])
+        lay.addWidget(self.table, 1)
+        self.refresh()
+
+    def refresh(self):
+        runs = history.recent(30)
+        self.trend.set_scores([r.score for r in reversed(runs)])
+        self.table.setRowCount(len(runs))
+        for r, run in enumerate(runs):
+            c = run.counts
+            for col, v in enumerate((run.started, run.score, c["critical"], c["high"], c["medium"], c["low"],
+                                     run.files_scanned)):
+                self.table.setItem(r, col, QTableWidgetItem(str(v)))
+        self.table.setColumnWidth(0, 170)
+        if len(runs) >= 2:
+            new, resolved = history.changes(runs[1], runs[0])
+            bits = [f"Since the previous check: {len(new)} new, {len(resolved)} resolved."]
+            bits += [f"+ {d['title']}" for d in new[:3]] + [f"- {d['title']}" for d in resolved[:3]]
+            self.status.setText("\n".join(bits))
+        else:
+            self.status.setText("Run a full check from the Dashboard to start your history.")
 
 
 class AlertBridge(QObject):
@@ -300,7 +372,9 @@ class DashboardPage(QWidget):
         self.score.setText(str(s))
         color = "#4cd964" if s >= 85 else "#ffcb6b" if s >= 60 else "#ff5370"
         self.score.setStyleSheet(f"color:{color}")
-        self.score_caption.setText(f"Security score - {len(res.findings)} finding(s)")
+        prev = res.meta.get("prev_score")
+        delta = f" ({s - prev:+d} vs last check)" if prev is not None else ""
+        self.score_caption.setText(f"Security score{delta} - {len(res.findings)} finding(s)")
         fill_findings(self.table, res.findings)
         self.status.setText(f"Done. Files scanned: {res.meta.get('files_scanned', 0)}. Report saved.")
         self.btn.setEnabled(True)
@@ -537,6 +611,7 @@ class MainWindow(QMainWindow):
             ("Quarantine", QuarantinePage()),
             ("Disk Cleanup", CleanupPage()),
             ("Alerts", self.alerts_page),
+            ("History", HistoryPage()),
             ("Reports", ReportsPage()),
         ]
         for name, page in pages:
@@ -610,7 +685,7 @@ class MainWindow(QMainWindow):
     def _switch(self, row: int):
         self.stack.setCurrentIndex(row)
         w = self.stack.currentWidget()
-        if isinstance(w, QuarantinePage):
+        if isinstance(w, (QuarantinePage, HistoryPage)):
             w.refresh()
 
 

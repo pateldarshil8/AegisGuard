@@ -10,7 +10,7 @@ from .core import config, settings
 from pathlib import Path
 
 from .modules import (cleanup, firewall, fixer, fwrules, health, monitor, netmon, processes, quarantine,
-                      remediation, reports, scanner, signatures)
+                      history, remediation, reports, scanner, signatures)
 
 
 def _fix_flow(auto_yes: bool) -> int:
@@ -141,6 +141,25 @@ def _signatures_cmd(force: bool, show_status: bool) -> int:
     return 0
 
 
+def _history_cmd(limit: int) -> int:
+    runs = history.recent(limit)
+    if not runs:
+        print("No history yet. Run: aegisguard full")
+        return 0
+    print(f"{'When':20} {'Score':>5}  {'Crit':>4} {'High':>4} {'Med':>4} {'Low':>4}")
+    for r in runs:
+        c = r.counts
+        print(f"{r.started:20} {r.score:>5}  {c['critical']:>4} {c['high']:>4} {c['medium']:>4} {c['low']:>4}")
+    if len(runs) >= 2:
+        new, resolved = history.changes(runs[1], runs[0])
+        print(f"\nSince the previous check: {len(new)} new, {len(resolved)} resolved.")
+        for d in new[:5]:
+            print(f"  + [{d['severity'].upper()}] {d['title']}")
+        for d in resolved[:5]:
+            print(f"  - {d['title']}")
+    return 0
+
+
 def _watch(interval: int) -> int:
     """Re-check connections every `interval` seconds; print only new findings. Ctrl+C to stop."""
     seen: set[tuple] = set()
@@ -185,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("space", help="show which folders use the most disk space (read-only)")
     sp.add_argument("--path", help="folder to measure (default: your user folder)")
     sp.add_argument("--top", type=int, default=15)
+    hp = sub.add_parser("history", help="show past full-check scores and what changed")
+    hp.add_argument("--limit", type=int, default=15)
     us = sub.add_parser("update-signatures", help="download the latest malware hash list")
     us.add_argument("--force", action="store_true", help="ignore the once-per-hour limit")
     us.add_argument("--status", action="store_true", help="show when the list was last updated")
@@ -210,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         launch(start_hidden=args.minimized)
         return 0
+    if args.cmd == "history":
+        return _history_cmd(args.limit)
     if args.cmd == "update-signatures":
         return _signatures_cmd(args.force, args.status)
     if args.cmd == "cleanup":
@@ -236,6 +259,10 @@ def main(argv: list[str] | None = None) -> int:
     for f in merged.findings:
         print(f"[{f.severity.value.upper():8}] {f.module}: {f.title} {('- ' + f.detail) if f.detail else ''}")
     print(f"\n{len(merged.findings)} finding(s). Report: {md}")
+    if args.cmd == "full":
+        run, prev = history.record(merged)
+        delta = f" ({run.score - prev.score:+d} vs previous check)" if prev else ""
+        print(f"Security score: {run.score}/100{delta}")
     return 1 if any(f.severity.value in ("high", "critical") for f in merged.findings) else 0
 
 
