@@ -206,7 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health", help="CPU/memory/disk snapshot")
-    sc = sub.add_parser("scan", help="file scan (Downloads + Temp by default)")
+    sc = sub.add_parser("scan", help="file scan (quick by default)")
+    sc.add_argument("--mode", choices=["quick", "full", "deep"], default="quick",
+                    help="quick: common malware locations; full: every local drive; deep: full plus stricter checks")
     sc.add_argument("--path", action="append", help="scan this folder instead (repeatable)")
     sub.add_parser("procs", help="check running processes for signs of malware (read-only)")
     bp = sub.add_parser("block", help="block a program (full .exe path) or internet IP in Windows Firewall")
@@ -278,10 +280,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "net" and args.watch:
         return _watch(args.watch)
 
-    scan_run = (lambda: scanner.run([Path(p) for p in args.path])) if getattr(args, "path", None) else scanner.run
+    scan_mode = getattr(args, "mode", "quick")
+    scan_run = (lambda: scanner.run([Path(p) for p in args.path], scan_mode)) if getattr(args, "path", None) \
+        else (lambda: scanner.run(mode=scan_mode))
     runners = {"health": [health.run], "scan": [scan_run], "procs": [processes.run], "firewall": [firewall.run],
                "audit": [fixer.run], "net": [netmon.run],
-               "full": [health.run, scanner.run, processes.run, firewall.run, fixer.run, netmon.run]}[args.cmd]
+               "full": [health.run, lambda: scanner.run(mode="quick"), processes.run, firewall.run, fixer.run, netmon.run]}[args.cmd]
     merged = reports.merge([r() for r in runners])
     md, _ = reports.write(merged)
     for f in merged.findings:

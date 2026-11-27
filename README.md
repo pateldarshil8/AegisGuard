@@ -8,7 +8,7 @@ Endpoint security and system health suite for Windows 10/11, in one desktop app.
 
 | Area | What you get |
 |---|---|
-| **Malware scan** | Known-bad hashes (plus an optional downloadable threat feed), double-extension tricks, programs disguised as pictures/documents, suspicious scripts. Quarantine with restore. |
+| **Malware scan** | Known-bad hashes (plus an optional downloadable threat feed), double-extension tricks, programs disguised as pictures/documents, suspicious scripts. Quarantine with restore. Scan types: Quick (common malware locations), Full (every local drive), Deep (full plus stricter checks), Custom (folders you pick); any scan can be stopped. |
 | **Process check** | Windows process names running from the wrong folder, look-alike names, programs running from Temp/Downloads, suspicious PowerShell. |
 | **Network** | Risky open ports and suspicious outbound connections. Block a program or IP in Windows Firewall (always asks first). |
 | **Fixes** | Finds risky settings (UAC, SMBv1, Remote Desktop, Defender off, firewall off) and offers one-click fixes after you review the exact command. |
@@ -37,7 +37,7 @@ Download `AegisGuardSetup-<version>.exe` from the [Releases](https://github.com/
 `aegisguard-cli` (installed) or `aegisguard` (from source):
 
 ```
-full | scan [--path DIR] | procs | net [--watch N] | firewall | audit
+full | scan [--mode quick|full|deep] [--path DIR] | procs | net [--watch N] | firewall | audit
 fix | block <exe-or-ip> | unblock <rule> | rules
 quarantine list|add|restore|delete | cleanup | space | history
 update-signatures | monitor | ui

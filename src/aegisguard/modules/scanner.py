@@ -6,7 +6,9 @@ use the quarantine module to act on a result.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from ..core import config, settings
@@ -19,6 +21,14 @@ KNOWN_BAD = {
 }
 MAX_HASH_BYTES = 50 * 1024 * 1024
 MAX_SCRIPT_BYTES = 1024 * 1024
+DEEP_MAX_HASH_BYTES = 300 * 1024 * 1024
+
+MODES = {
+    "quick": "Quick scan",
+    "full": "Full scan",
+    "deep": "Deep scan",
+    "custom": "Custom scan",
+}
 
 # Extensions people trust as "just a document/media file"
 DOC_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".gif",
@@ -88,7 +98,7 @@ def _script_hits(path: Path) -> list[str]:
     return [name for name, rx in SCRIPT_PATTERNS.items() if rx.search(text)]
 
 
-def scan_path(path: Path, res: ScanResult) -> None:
+def scan_path(path: Path, res: ScanResult, deep: bool = False) -> None:
     try:
         size = path.stat().st_size
     except OSError:
@@ -101,8 +111,10 @@ def scan_path(path: Path, res: ScanResult) -> None:
         res.add(Finding("scanner", "Double-extension executable", Severity.HIGH, path.name,
                         "Likely disguised malware; quarantine or delete.", str(path)))
 
-    # A real program renamed to look like a document or picture
-    if ext in DOC_EXTS and size >= 2 and _starts_with_mz(path):
+    # A real program renamed to look like a document or picture. A deep scan checks every file type, not just
+    # the ones people trust as documents.
+    if (ext in DOC_EXTS or (deep and ext not in config.RISKY_EXTENSIONS and ext not in {".sys", ".ocx", ".cpl", ".scr"}
+                            and ext)) and size >= 2 and size <= MAX_HASH_BYTES and _starts_with_mz(path):
         res.add(Finding("scanner", f"Executable disguised as {ext} file", Severity.HIGH, path.name,
                         "File has a Windows program header but a document/media extension. Quarantine it.",
                         str(path)))
@@ -117,28 +129,90 @@ def scan_path(path: Path, res: ScanResult) -> None:
                             str(path)))
 
     # Known-bad hash
-    if size <= MAX_HASH_BYTES and (ext in config.RISKY_EXTENSIONS or size < 1024):
+    limit = DEEP_MAX_HASH_BYTES if deep else MAX_HASH_BYTES
+    if size <= limit and (ext in config.RISKY_EXTENSIONS or size < 1024 or (deep and ext in {".sys", ".ocx", ".cpl"})):
         digest = sha256(path)
         if digest in KNOWN_BAD:
             res.add(Finding("scanner", f"Known threat: {KNOWN_BAD[digest]}", Severity.CRITICAL,
                             digest, "Quarantine immediately.", str(path)))
 
 
-def run(dirs: list[Path] | None = None) -> ScanResult:
+def fixed_drives() -> list[Path]:
+    """Every local (non-removable, non-network) drive; the home folder if the system can't list drives."""
+    roots: list[Path] = []
+    try:
+        import psutil
+        for part in psutil.disk_partitions(all=False):
+            opts = part.opts.lower()
+            if "cdrom" in opts or "removable" in opts or part.fstype.lower() in {"", "nfs", "cifs", "smbfs"}:
+                continue
+            roots.append(Path(part.mountpoint))
+    except Exception:
+        pass
+    return roots or [Path.home()]
+
+
+def targets(mode: str, custom: list[Path] | None = None) -> list[Path]:
+    if mode == "custom":
+        return list(custom or [])
+    if mode in ("full", "deep"):
+        return fixed_drives()
+    return list(config.QUICK_SCAN_DIRS)
+
+
+def _walk(root: Path, skip: tuple[str, ...], skip_names: set[str], mode: str):
+    """Yield every file under root without following links, skipping excluded and bookkeeping folders."""
+    if root.is_file():
+        yield root
+        return
+    for cur, dirs, files in os.walk(root, followlinks=False, onerror=lambda e: None):
+        here = cur.lower()
+        if here.startswith(skip):
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if d.lower() not in skip_names
+                   and not (mode == "full" and os.path.join(cur, d).lower() in config.FULL_SCAN_SKIP_PATHS)
+                   and not os.path.islink(os.path.join(cur, d))]
+        for f in files:
+            yield Path(cur, f)
+
+
+def run(dirs: list[Path] | None = None, mode: str = "quick",
+        progress: Callable[[int, str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None) -> ScanResult:
+    """Scan folders and return findings. mode: quick | full | deep | custom (dirs given = custom).
+
+    progress(count, current_path) is called regularly; cancelled() returning True stops the scan early.
+    """
     res = ScanResult()
     KNOWN_BAD.update(load_known_bad())
+    if dirs:
+        mode = "custom" if mode == "quick" else mode
+    roots = list(dirs) if dirs else targets(mode)
     skip = (str(config.QUARANTINE_DIR).lower(), *(e.lower() for e in settings.load().exclusions))
+    skip_names = config.SCAN_SKIP_NAMES if mode in ("full", "deep") else set()
+    deep = mode == "deep"
     count = 0
-    for d in dirs or config.QUICK_SCAN_DIRS:
-        if not d.exists():
+    stopped = False
+    for d in roots:
+        if stopped or not d.exists():
             continue
         try:
-            for p in d.rglob("*"):
-                if str(p).lower().startswith(skip) or not p.is_file():
+            for p in _walk(d, skip, skip_names, mode):
+                if cancelled and cancelled():
+                    stopped = True
+                    break
+                if str(p).lower().startswith(skip):
                     continue
                 count += 1
-                scan_path(p, res)
+                if progress and count % 200 == 0:
+                    progress(count, str(p))
+                scan_path(p, res, deep)
         except OSError:
             continue
+    if progress:
+        progress(count, "")
     res.meta["files_scanned"] = count
+    res.meta["mode"] = mode
+    res.meta["stopped"] = stopped
     return res

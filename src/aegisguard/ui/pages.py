@@ -6,9 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 import psutil
-from PySide6.QtCore import QPointF, Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QListWidget, QMessageBox, QProgressBar,
+from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QMessageBox, QProgressBar,
                                QPushButton, QTextEdit, QVBoxLayout, QWidget)
 
 from ..core import config, settings
@@ -52,43 +52,163 @@ def _clear(layout):
             _clear(item.layout())
 
 
+class ScanWorker(QThread):
+    """Runs a scan off the UI thread, reporting progress and honouring a stop request."""
+    progress = Signal(int, str)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, mode: str, dirs: list[Path] | None):
+        super().__init__()
+        self.mode, self.dirs, self._stop = mode, dirs, False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            self.done.emit(scanner.run(self.dirs, self.mode, lambda n, p: self.progress.emit(n, p), lambda: self._stop))
+        except Exception as e:
+            self.failed.emit(f"{type(e).__name__}: {e}")
+
+
 class ScanPage(QWidget):
-    """Malware scan: findings as cards, with quarantine."""
+    """Malware scan: choose Quick / Full / Deep / Custom, then review findings as cards."""
+    OPTIONS = (
+        ("quick", "Quick scan", "Downloads, Desktop, Temp and startup folders. Usually a minute or two."),
+        ("full", "Full scan", "Every file on every local drive. Can take an hour or more."),
+        ("deep", "Deep scan", "A full scan plus stricter checks: more file types, bigger files, system files. Slowest."),
+        ("custom", "Custom scan", "Pick the folders to scan."),
+    )
 
     def __init__(self):
         super().__init__()
+        self.mode = "quick"
+        self.custom: list[Path] = []
+        self.worker: ScanWorker | None = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(16)
-        self.btn = button("Run quick scan", self.start)
-        lay.addWidget(page_header("Malware scan", "Checks your Downloads and Temp folders for known threats, disguised "
-                                                  "programs and risky scripts. Files are only read.", self.btn))
-        self.stats = StatRow([("Files scanned", "--", "Downloads and Temp"), ("Findings", "--", ""), ("Last scan", "--", "")])
+        self.btn = button("Run scan", self.start)
+        self.stop_btn = button("Stop", self.stop, "secondary")
+        self.stop_btn.setVisible(False)
+        actions = QWidget()
+        ah = QHBoxLayout(actions)
+        ah.setContentsMargins(0, 0, 0, 0)
+        ah.addWidget(self.stop_btn)
+        ah.addWidget(self.btn)
+        lay.addWidget(page_header("Malware scan", "Looks for known threats, disguised programs and risky scripts. Files "
+                                                  "are only read, never changed.", actions))
+        opts = QHBoxLayout()
+        opts.setSpacing(12)
+        self.cards: dict[str, QPushButton] = {}
+        for key, title, text in self.OPTIONS:
+            b = QPushButton(f"{title}\n{text}")
+            b.setObjectName("optioncard")
+            b.setCheckable(True)
+            b.setMinimumHeight(86)
+            b.clicked.connect(lambda _=False, k=key: self.pick(k))
+            opts.addWidget(b, 1)
+            self.cards[key] = b
+        lay.addLayout(opts)
+        self.folder_row = QWidget()
+        fr = QHBoxLayout(self.folder_row)
+        fr.setContentsMargins(0, 0, 0, 0)
+        self.folder_label = note_label("No folders chosen.")
+        fr.addWidget(self.folder_label, 1)
+        fr.addWidget(button("Add folder", self.add_folder, "secondary"))
+        fr.addWidget(button("Clear", self.clear_folders, "secondary"))
+        lay.addWidget(self.folder_row)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)
+        self.bar.setTextVisible(False)
+        self.bar.setVisible(False)
+        lay.addWidget(self.bar)
+        self.stats = StatRow([("Files scanned", "--", ""), ("Findings", "--", ""), ("Last scan", "--", "")])
         lay.addWidget(self.stats)
         body = QHBoxLayout()
         body.setSpacing(18)
-        self.list = CardList("Run a quick scan to see results.")
+        self.list = CardList("Choose a scan type and press Run scan.")
         body.addWidget(self.list, 2)
-        side, sv = panel("What gets scanned")
-        for d in config.QUICK_SCAN_DIRS:
-            sv.addWidget(note_label("●  " + str(d)))
-        excl = len(settings.load().exclusions)
-        sv.addStretch(1)
-        sv.addWidget(note_label(f"{excl} exclusion(s). The quarantine folder is always skipped. Quarantining asks first "
-                                "and can be undone.", "mute"))
+        side, self.side_lay = panel("What gets scanned")
+        self.side_text = note_label("")
+        self.side_lay.addWidget(self.side_text)
+        self.side_lay.addStretch(1)
+        self.side_lay.addWidget(note_label("The quarantine folder and your exclusions are always skipped. Quarantining "
+                                           "asks first and can be undone.", "mute"))
         body.addWidget(side, 1)
         lay.addLayout(body, 1)
+        self.pick("quick")
+
+    def pick(self, mode: str):
+        self.mode = mode
+        for k, b in self.cards.items():
+            b.setChecked(k == mode)
+        self.folder_row.setVisible(mode == "custom")
+        self._describe()
+
+    def _describe(self):
+        if self.mode == "quick":
+            lines = [str(d) for d in config.QUICK_SCAN_DIRS]
+        elif self.mode == "custom":
+            lines = [str(d) for d in self.custom] or ["Add at least one folder."]
+        else:
+            lines = [str(d) for d in scanner.fixed_drives()]
+            if self.mode == "full":
+                lines.append("(Windows\\WinSxS is left out; the deep scan includes it.)")
+        self.side_text.setText("\n".join("\u25cf  " + x if not x.startswith("(") else x for x in lines))
+        excl = len(settings.load().exclusions)
+        self.stats._notes[0].setText(f"{excl} exclusion(s)")
+
+    def add_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder to scan")
+        if d and Path(d) not in self.custom:
+            self.custom.append(Path(d))
+            self.folder_label.setText("; ".join(str(c) for c in self.custom))
+            self._describe()
+
+    def clear_folders(self):
+        self.custom = []
+        self.folder_label.setText("No folders chosen.")
+        self._describe()
 
     def start(self):
-        self.btn.setEnabled(False)
+        if self.mode == "custom" and not self.custom:
+            QMessageBox.information(self, "Custom scan", "Add at least one folder first.")
+            return
+        if self.mode in ("full", "deep") and QMessageBox.question(
+                self, "Start scan?", f"A {self.mode} scan reads every file on your drives and can take a long time. "
+                "You can keep using AegisGuard and press Stop at any time.\n\nStart now?") != QMessageBox.Yes:
+            return
+        self._busy(True)
         self.list.clear()
         self.list.set_empty("Scanning...")
-        self.worker = Worker(scanner.run)
+        self.worker = ScanWorker(self.mode, self.custom if self.mode == "custom" else None)
+        self.worker.progress.connect(self.on_progress)
         self.worker.done.connect(self.finish)
         self.worker.failed.connect(self.fail)
         self.worker.start()
 
+    def stop(self):
+        if self.worker:
+            self.worker.stop()
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setText("Stopping...")
+
+    def _busy(self, on: bool):
+        self.btn.setEnabled(not on)
+        self.stop_btn.setVisible(on)
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.setText("Stop")
+        self.bar.setVisible(on)
+        for b in self.cards.values():
+            b.setEnabled(not on)
+
+    def on_progress(self, n: int, path: str):
+        self.stats.set(0, f"{n:,}", path[-60:] if path else "")
+
     def finish(self, res: ScanResult):
+        self._busy(False)
         self.list.clear()
         for f in sorted(res.findings, key=lambda f: SEV_RANK[f.severity.value]):
             ref = [None]
@@ -98,16 +218,16 @@ class ScanPage(QWidget):
             btns.append(button("Ignore", lambda ref=ref: self.list.drop(ref[0]), "secondary"))
             ref[0] = finding_card(f.to_dict(), btns)
             self.list.add(ref[0])
-        self.list.set_empty("No issues found.")
-        self.stats.set(0, str(res.meta.get("files_scanned", 0)))
+        stopped = res.meta.get("stopped")
+        self.list.set_empty("Scan stopped before any threats were found." if stopped else "No threats found.")
+        self.stats.set(0, f"{res.meta.get('files_scanned', 0):,}", "stopped early" if stopped else "complete")
         self.stats.set(1, str(len(res.findings)), _sev_summary(res.findings))
-        self.stats.set(2, datetime.now().strftime("%H:%M"), "quick scan")
-        self.btn.setEnabled(True)
+        self.stats.set(2, datetime.now().strftime("%H:%M"), scanner.MODES.get(res.meta.get("mode", ""), ""))
 
     def fail(self, msg: str):
+        self._busy(False)
         self.list.clear()
         self.list.set_empty(f"Scan failed: {msg}")
-        self.btn.setEnabled(True)
 
     def _quarantine(self, f: Finding, card: QFrame):
         if not require_admin(self):

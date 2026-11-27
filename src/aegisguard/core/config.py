@@ -22,11 +22,24 @@ LOG_FILE = DATA_DIR / "aegisguard.log"
 # Health thresholds (percent)
 CPU_WARN, MEM_WARN, DISK_WARN = 85.0, 85.0, 90.0
 
-# Folders the quick scan covers
+# Folders the quick scan covers: the places malware usually lands or starts from
+_USER = Path(os.environ.get("USERPROFILE", "C:\\Users\\Public"))
+_APPDATA = Path(os.environ.get("APPDATA", str(_USER / "AppData" / "Roaming")))
+_PROGRAMDATA = Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData"))
+_WINDIR = Path(os.environ.get("WINDIR", "C:\\Windows"))
 QUICK_SCAN_DIRS = [
-    Path(os.environ.get("USERPROFILE", "C:\\Users\\Public")) / "Downloads",
-    Path(os.environ.get("TEMP", "C:\\Windows\\Temp")),
+    _USER / "Downloads",
+    _USER / "Desktop",
+    Path(os.environ.get("TEMP", str(_WINDIR / "Temp"))),
+    _WINDIR / "Temp",
+    _APPDATA / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
+    _PROGRAMDATA / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
+    Path("C:\\Users\\Public"),
 ]
+# Folders the full and deep scans skip: Windows' own bookkeeping, not files you can run
+SCAN_SKIP_NAMES = {"$recycle.bin", "system volume information", "$windows.~bt", "$windows.~ws"}
+# The component store is huge and mostly hard links; the full scan leaves it out, the deep scan does not
+FULL_SCAN_SKIP_PATHS = [str(_WINDIR / "WinSxS").lower()]
 
 # Extensions that are risky when found in user-writable locations
 RISKY_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".jar", ".msi", ".dll", ".lnk"}
