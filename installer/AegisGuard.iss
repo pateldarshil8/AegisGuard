@@ -27,7 +27,8 @@ PrivilegesRequired=admin
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+; The tray app ignores polite close requests, so it is stopped explicitly in PrepareToInstall below
+CloseApplications=no
 UsePreviousTasks=yes
 
 [Tasks]
@@ -57,6 +58,17 @@ Filename: "taskkill.exe"; Parameters: "/F /IM {#MyAppExe}"; Flags: runhidden; Ru
 Filename: "powershell.exe"; Parameters: "-NoProfile -Command ""Unregister-ScheduledTask -TaskName 'AegisGuard' -Confirm:$false -ErrorAction SilentlyContinue"""; Flags: runhidden; RunOnceId: "RemoveStartupTask"
 
 [Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  rc: Integer;
+begin
+  { Stop the running tray app and CLI so their files can be replaced (needed for in-app updates) }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#MyAppExe}', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM aegisguard-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Sleep(800);
+  Result := '';
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
