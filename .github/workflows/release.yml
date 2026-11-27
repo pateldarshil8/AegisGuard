@@ -49,7 +49,17 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: ./installer/build.ps1
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.AEGISGUARD_SIGN_PFX_BASE64 }}
+          AEGISGUARD_SIGN_PASSWORD: ${{ secrets.AEGISGUARD_SIGN_PASSWORD }}
+        run: |
+          # Sign the app and installer when a signing certificate is configured (skipped otherwise)
+          if ($env:SIGN_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+            $env:AEGISGUARD_SIGN_PFX = $pfx
+          }
+          ./installer/build.ps1
 
       - name: Write checksum
         shell: pwsh

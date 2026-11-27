@@ -8,3 +8,7 @@ build/
 dist/
 dist-installer/
 installer/aegisguard.ico
+
+# signing keys
+*.pfx
+*.base64.txt
