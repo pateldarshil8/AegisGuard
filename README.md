@@ -33,6 +33,10 @@ Download `AegisGuardSetup-<version>.exe` from the [Releases](https://github.com/
 - Installs to `C:\Program Files\AegisGuard`; reports, quarantine and settings live in `C:\ProgramData\AegisGuard`.
 - Tick "Start AegisGuard protection when I sign in" for always-on protection.
 
+## Updates
+
+Installed copies check GitHub Releases for new versions. A popup appears when you open the app (and a notification plus the Updates tab if it is already running). Each download is verified against its published SHA-256 before it is installed, and installing an update asks for approval first.
+
 ## Command line
 `aegisguard-cli` (installed) or `aegisguard` (from source):
 
