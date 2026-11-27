@@ -10,7 +10,7 @@ src = str(spec_dir.parent / "src")
 icon_file = spec_dir / "aegisguard.ico"
 icon = str(icon_file) if icon_file.exists() else None
 
-a_gui = Analysis([str(spec_dir / "entry_gui.py")], pathex=[src], excludes=["tkinter", "pytest"])
+a_gui = Analysis([str(spec_dir / "entry_gui.py")], pathex=[src], hiddenimports=["PySide6.QtSvg"], excludes=["tkinter", "pytest"])
 a_cli = Analysis([str(spec_dir / "entry_cli.py")], pathex=[src],
                  excludes=["tkinter", "pytest", "PySide6", "shiboken6", "aegisguard.ui"])
 

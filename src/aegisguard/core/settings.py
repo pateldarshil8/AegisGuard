@@ -24,6 +24,7 @@ class Settings:
     audit_minutes: int = 60
     min_alert_severity: str = "medium"  # info | low | medium | high | critical
     check_updates: bool = True  # look for a newer release on GitHub when the app opens
+    theme: str = "system"  # system | light | dark
     signature_feed_url: str = "https://mb-api.abuse.ch/v2/files/exports/{auth_key}/recent.csv"
 
 
@@ -40,6 +41,8 @@ def load() -> Settings:
     for f in fields(Settings):
         if f.name in raw and isinstance(raw[f.name], type(getattr(s, f.name))):
             setattr(s, f.name, raw[f.name])
+    if s.theme not in ("system", "light", "dark"):
+        s.theme = "system"
     return s
 
 

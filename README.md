@@ -18,6 +18,10 @@ Endpoint security and system health suite for Windows 10/11, in one desktop app.
 
 Everything that changes your system asks first. The scanner and monitors are read-only. No cloud service is required; the only network call is the optional signature update.
 
+## Look and feel
+
+Settings > Appearance switches between System, Light and Dark. System follows the Windows app mode and changes with it. Navigation is the icon rail on the left; related pages share tabs (Scan: Malware scan and Processes; Network: Connections and Firewall; History: History and Reports; Settings: Appearance, Administrator and Updates).
+
 ## Administrator password
 
 Open **Administrator** in the app to set a password. Once set, applying fixes, quarantine restore/delete, disk cleanup, installing updates, and pausing or quitting protection all ask for it first. A correct password unlocks those actions for a few minutes (default 10, adjustable), then they lock again, and repeated wrong guesses add a growing delay. Only a salted PBKDF2 hash is stored (`data\admin.json`). This protects the app itself; it is not a substitute for a Windows account password.
