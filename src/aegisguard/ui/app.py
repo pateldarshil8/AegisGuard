@@ -655,7 +655,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"AegisGuard {__version__}")
+        self.setWindowTitle("AegisGuard")
         self.resize(1180, 740)
         root = QWidget()
         self.setCentralWidget(root)
