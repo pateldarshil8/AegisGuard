@@ -88,6 +88,12 @@ QLabel#mute { color: $mute; font-size: 12px; }
 QLabel#h1 { font-size: 26px; font-weight: 600; }
 QLabel#caps { color: $sub; font-size: 11px; font-weight: 600; }
 QLabel#score { font-size: 60px; font-weight: 600; }
+QLabel#stat { font-size: 26px; font-weight: 600; }
+QLabel#code { background: $inset; color: $text; border-radius: 6px; padding: 6px 8px; font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; }
+QTextEdit#preview { background: $inset; color: $text; border: none; border-radius: 8px; padding: 8px; font-family: Consolas, 'Cascadia Mono', monospace; font-size: 12px; }
+QListWidget { background: $panel; color: $text; border: 1px solid $line; border-radius: 10px; padding: 4px; }
+QListWidget::item { padding: 8px 10px; border-radius: 6px; }
+QListWidget::item:selected { background: $activeBg; color: $activeFg; }
 QLabel#cardtitle { font-size: 15px; font-weight: 600; }
 QFrame#rail { background: $rail; border: none; border-right: 1px solid $line; }
 QFrame#card { background: $panel; border: 1px solid $line; border-radius: 16px; }
